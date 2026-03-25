@@ -1,0 +1,556 @@
+import { rm } from "fs/promises"
+import path from "path"
+import { Global } from "@/global"
+import { Lock } from "@/util/lock"
+import { Filesystem } from "@/util/filesystem"
+import { Session } from "@/session"
+import { SessionPrompt } from "@/session/prompt"
+import { Instance } from "@/project/instance"
+import { AutofixAnalyzer } from "./analysis"
+import { AutofixAuto } from "./auto"
+import { AutofixConfig } from "./config"
+import { AutofixExecutor } from "./executor"
+import { LocalGitFlow } from "./git"
+import { CellPackager, VersionManager } from "./package"
+import { AutofixQueue } from "./queue"
+import { AutofixReport } from "./report"
+import { CellFeedbackSource } from "./source/postgres"
+import { CellSmokeVerifier } from "./verify/electron-webview"
+import type { AutofixSchema } from "./schema"
+import type { ResolvedTarget, RunCtx } from "./types"
+
+const MAX_ATTEMPTS = 5
+
+type Job = {
+  abort: AbortController
+  promise: Promise<void>
+}
+
+const jobs = new Map<string, Job>()
+const active = new Set(["analyzing", "implementing", "verifying", "committing", "packaging"])
+
+export namespace AutofixRunner {
+  async function collect(cfg: ResolvedTarget, feedbackID: string) {
+    const roots = [cfg.directory, Global.Path.data, Global.Path.state].map((item) => Filesystem.resolve(item))
+    const files = new Set<string>()
+    const sessions = new Set<string>()
+    const push = (file?: string) => {
+      if (!file) return
+      const next = Filesystem.resolve(file)
+      if (!roots.some((root) => Filesystem.contains(root, next))) return
+      files.add(next)
+    }
+    for (const row of (await AutofixQueue.listRuns(cfg.project_id)).filter((item) => item.feedback_id === feedbackID)) {
+      const detail = await AutofixQueue.detail(row.id)
+      if (!detail) continue
+      if (detail.run.session_id) sessions.add(detail.run.session_id)
+      push(detail.run.report_json_path)
+      push(detail.run.report_md_path)
+      push(detail.run.smoke_log_path)
+      push(detail.run.package_log_path)
+      push(path.join(Global.Path.state, "autofix", "run", detail.run.id))
+      push(path.join(Global.Path.data, "autofix", detail.run.project_id, detail.run.id))
+      detail.attempts.forEach((item) => {
+        push(item.verify_log_path)
+        push(item.package_log_path)
+      })
+      detail.artifacts.forEach((item) => push(item.path))
+    }
+    return {
+      files: [...files],
+      sessions: [...sessions],
+    }
+  }
+
+  async function target(projectDir: string) {
+    const next = await AutofixConfig.resolveForDirectory(projectDir)
+    if (!next) throw new Error("Autofix is not enabled for the current project")
+    return next
+  }
+
+  async function preflight(cfg: ResolvedTarget) {
+    const file = path.join(cfg.directory, "package.json")
+    const pkg = await Filesystem.readJson<{ scripts?: Record<string, string>; version?: string }>(file).catch(() => undefined)
+    if (!pkg?.version) throw new Error("package.json version is missing")
+    if (!pkg.scripts?.["desktop:webview"]) throw new Error("package.json is missing desktop:webview script")
+    if (!(await Filesystem.exists(path.join(cfg.directory, "build-mac-arm64-dmg.sh"))))
+      throw new Error("build-mac-arm64-dmg.sh is missing")
+    await LocalGitFlow.ensureClean(cfg.directory)
+    await LocalGitFlow.branch(cfg.directory)
+    await CellFeedbackSource.pull(cfg.source, {}, 1)
+  }
+
+  async function audio(cfg: ResolvedTarget, feedback: Awaited<ReturnType<typeof AutofixQueue.getFeedback>>) {
+    if (!feedback) return
+    if (feedback.recognized_text?.trim()) return
+    if (feedback.meta && JSON.stringify(feedback.meta) !== "{}") return
+    if (!cfg.feedback.use_audio_when_text_missing || !feedback.has_audio) return
+    if ((feedback.audio_size_bytes ?? 0) > cfg.feedback.max_audio_bytes) return
+    return CellFeedbackSource.fetchAudio(cfg.source, feedback.external_id)
+  }
+
+  async function ctx(cfg: ResolvedTarget, runID: string, sessionID: string) {
+    const detail = await AutofixQueue.detail(runID)
+    if (!detail?.feedback) throw new Error("Autofix feedback not found")
+    return {
+      target: cfg,
+      run_id: runID,
+      session_id: sessionID,
+      feedback_id: detail.feedback.id,
+      external_id: detail.feedback.external_id,
+      recognized_text: detail.feedback.recognized_text,
+      meta: detail.feedback.meta,
+      app_version: detail.feedback.app_version,
+      language: detail.feedback.language,
+      recognize_error: detail.feedback.recognize_error,
+    } satisfies RunCtx
+  }
+
+  async function rollback(cfg: ResolvedTarget, base_commit?: string) {
+    const state = await AutofixQueue.summary({
+      directory: cfg.directory,
+      project_id: cfg.project_id,
+      profile: cfg.profile,
+      supported: true,
+    })
+    const commit = state.state.last_success_commit ?? base_commit
+    if (!commit) return
+    await LocalGitFlow.rollback(cfg.directory, commit)
+  }
+
+  async function fail(cfg: ResolvedTarget, runID: string, feedbackID: string, reason: string, base_commit?: string) {
+    await rollback(cfg, base_commit)
+    await AutofixQueue.updateRun(runID, {
+      status: "failed",
+      failure_reason: reason,
+      time_finished: Date.now(),
+    })
+    await AutofixQueue.setStatus(feedbackID, "failed", reason, runID)
+    await AutofixQueue.log({
+      directory: cfg.directory,
+      project_id: cfg.project_id,
+      run_id: runID,
+      feedback_id: feedbackID,
+      phase: "failed",
+      level: "error",
+      message: reason,
+    })
+    await AutofixQueue.emitRun(cfg.directory, runID)
+  }
+
+  async function halt(cfg: ResolvedTarget, runID: string, feedbackID: string, reason: string, base_commit?: string) {
+    await rollback(cfg, base_commit)
+    await AutofixQueue.updateRun(runID, {
+      status: "stopped",
+      failure_reason: reason,
+      time_finished: Date.now(),
+    })
+    await AutofixQueue.setStatus(feedbackID, "stopped", reason, runID)
+    await AutofixQueue.log({
+      directory: cfg.directory,
+      project_id: cfg.project_id,
+      run_id: runID,
+      feedback_id: feedbackID,
+      phase: "stopped",
+      level: "warn",
+      message: reason,
+    })
+    await AutofixQueue.emitRun(cfg.directory, runID)
+  }
+
+  async function queued(cfg: ResolvedTarget, feedbackID: string) {
+    const branch = await LocalGitFlow.branch(cfg.directory)
+    const base_commit = await LocalGitFlow.head(cfg.directory)
+    const run = await AutofixQueue.createRun({
+      project_id: cfg.project_id,
+      feedback_id: feedbackID,
+      status: "queued",
+      branch,
+      base_commit,
+      last_success_commit: (
+        await AutofixQueue.summary({
+          directory: cfg.directory,
+          project_id: cfg.project_id,
+          profile: cfg.profile,
+          supported: true,
+        })
+      ).state.last_success_commit,
+    })
+    await AutofixQueue.setStatus(feedbackID, "queued", undefined, run.id)
+    await AutofixQueue.emitRun(cfg.directory, run.id)
+    return run
+  }
+
+  async function runOne(
+    cfg: ResolvedTarget,
+    runID: string,
+    abort?: AbortSignal,
+    opts?: {
+      session_id?: Awaited<ReturnType<typeof Session.create>>["id"]
+      extra?: string
+      plan?: AutofixSchema.Plan
+      issue?: string
+    },
+  ) {
+    const detail = await AutofixQueue.detail(runID)
+    if (!detail?.feedback) throw new Error("Autofix run has no feedback")
+    const base_commit = detail.run.base_commit
+    const feedback = detail.feedback
+    const audio_file = (await audio(cfg, feedback)) ?? undefined
+    let sessionID = opts?.session_id
+    try {
+      if (!sessionID) {
+        const session = await Session.create({
+          title: `Autofix #${feedback.external_id}`,
+        })
+        sessionID = session.id
+      }
+      AutofixAuto.enable(sessionID)
+      await AutofixQueue.updateRun(runID, {
+        session_id: sessionID,
+        status: opts?.plan ? "implementing" : "analyzing",
+      })
+      await AutofixQueue.setStatus(feedback.id, opts?.plan ? "implementing" : "analyzing", undefined, runID)
+      await AutofixQueue.emitRun(cfg.directory, runID)
+      await AutofixQueue.log({
+        directory: cfg.directory,
+        project_id: cfg.project_id,
+        run_id: runID,
+        feedback_id: feedback.id,
+        phase: opts?.plan ? "implementing" : "analyzing",
+        level: "info",
+        message: opts?.plan ? `Continuing feedback #${feedback.external_id}` : `Analyzing feedback #${feedback.external_id}`,
+      })
+      const run = await ctx(cfg, runID, sessionID)
+      const plan = opts?.plan ?? (await AutofixAnalyzer.analyze(run, audio_file, opts?.extra))
+      if (!plan.automatable) {
+        await AutofixQueue.updateRun(runID, {
+          status: "blocked",
+          failure_reason: plan.blockers?.join("\n") || "Plan marked feedback as not automatable",
+          plan,
+          time_finished: Date.now(),
+        })
+        await AutofixQueue.setStatus(
+          feedback.id,
+          "blocked",
+          plan.blockers?.join("\n") || "Plan marked feedback as not automatable",
+          runID,
+        )
+        await AutofixQueue.emitRun(cfg.directory, runID)
+        return
+      }
+      await AutofixQueue.updateRun(runID, {
+        plan,
+        status: "implementing",
+      })
+      await AutofixQueue.emitRun(cfg.directory, runID)
+      let issue = opts?.issue ?? ""
+      for (let no = 1; no <= MAX_ATTEMPTS; no++) {
+        if (abort?.aborted) {
+          await halt(cfg, runID, feedback.id, "Autofix run aborted", base_commit)
+          return
+        }
+        const attempt = await AutofixQueue.createAttempt(runID, no)
+        await AutofixQueue.updateAttempt(attempt, {
+          status: "running",
+        })
+        await AutofixQueue.setStatus(feedback.id, "implementing", undefined, runID)
+        const result = await AutofixExecutor.implement(run, plan, no, audio_file, issue, opts?.extra)
+        await AutofixQueue.updateAttempt(attempt, {
+          files: result.files,
+          summary: `Touched ${result.files.length} file(s)`,
+        })
+        await AutofixQueue.updateRun(runID, {
+          status: "verifying",
+        })
+        await AutofixQueue.setStatus(feedback.id, "verifying", undefined, runID)
+        const smoke = await CellSmokeVerifier.verify(cfg.directory, runID, cfg.verify, abort)
+        await AutofixQueue.updateAttempt(attempt, {
+          status: smoke.ok ? "verified" : abort?.aborted ? "stopped" : "failed",
+          verify_ok: smoke.ok,
+          verify_log_path: smoke.log_path,
+          error: smoke.ok ? undefined : smoke.summary,
+        })
+        await AutofixQueue.updateRun(runID, {
+          smoke_log_path: smoke.log_path,
+        })
+        if (smoke.ok) break
+        issue = [smoke.summary, await Filesystem.readText(smoke.log_path).catch(() => "")].filter(Boolean).join("\n\n")
+        if (no === MAX_ATTEMPTS) {
+          await fail(cfg, runID, feedback.id, smoke.summary, base_commit)
+          return
+        }
+      }
+      const seq = (await AutofixQueue.listFeedback(cfg.project_id)).filter((item) => item.status === "done").length + 1
+      await AutofixQueue.updateRun(runID, {
+        status: "committing",
+      })
+      await AutofixQueue.setStatus(feedback.id, "committing", undefined, runID)
+      const version = await VersionManager.bump(cfg.directory, String(feedback.external_id), seq, cfg.version.format)
+      const commit_hash = await LocalGitFlow.commit(cfg.directory, `autofix(cell): feedback #${feedback.external_id}`)
+      await AutofixQueue.updateRun(runID, {
+        commit_hash,
+        version,
+        status: "packaging",
+      })
+      await AutofixQueue.setStatus(feedback.id, "packaging", undefined, runID)
+      try {
+        const pack = await CellPackager.build(cfg.directory, runID, cfg.package, abort)
+        await AutofixQueue.addArtifact({
+          directory: cfg.directory,
+          run_id: runID,
+          kind: "package",
+          path: pack.path,
+          sha256: pack.sha256,
+          size_bytes: pack.size_bytes,
+          mime: "application/x-apple-diskimage",
+        })
+        const report = await AutofixReport.write(runID)
+        await AutofixQueue.updateRun(runID, {
+          status: "done",
+          version,
+          commit_hash,
+          package_log_path: pack.log_path,
+          report_json_path: report.report_json_path,
+          report_md_path: report.report_md_path,
+          time_finished: Date.now(),
+        })
+        await AutofixQueue.setStatus(feedback.id, "done", undefined, runID)
+        await AutofixQueue.setState({
+          directory: cfg.directory,
+          project_id: cfg.project_id,
+          profile: cfg.profile,
+          status: "running",
+          last_success_commit: commit_hash,
+          last_success_version: version,
+        })
+        await AutofixQueue.emitRun(cfg.directory, runID)
+        return
+      } catch (err) {
+        await fail(cfg, runID, feedback.id, err instanceof Error ? err.message : String(err), base_commit)
+      }
+    } catch (err) {
+      if (abort?.aborted) {
+        await halt(cfg, runID, feedback.id, "Autofix run aborted", base_commit)
+        return
+      }
+      await fail(cfg, runID, feedback.id, err instanceof Error ? err.message : String(err), base_commit)
+    } finally {
+      if (sessionID) AutofixAuto.disable(sessionID)
+    }
+  }
+
+  async function loop(cfg: ResolvedTarget, abort: AbortController) {
+    await preflight(cfg)
+    await AutofixQueue.syncProject(cfg)
+    await AutofixQueue.setState({
+      directory: cfg.directory,
+      project_id: cfg.project_id,
+      profile: cfg.profile,
+      status: "running",
+      stop_requested: false,
+      note: undefined,
+    })
+    while (!abort.signal.aborted) {
+      const next = await AutofixQueue.next(cfg.project_id)
+      if (!next) break
+      const run = await queued(cfg, next.id)
+      await AutofixQueue.setState({
+        directory: cfg.directory,
+        project_id: cfg.project_id,
+        profile: cfg.profile,
+        status: "running",
+        active_run_id: run.id,
+      })
+      await runOne(cfg, run.id, abort.signal)
+      await AutofixQueue.setState({
+        directory: cfg.directory,
+        project_id: cfg.project_id,
+        profile: cfg.profile,
+        status: abort.signal.aborted ? "stopping" : "running",
+        active_run_id: null,
+      })
+    }
+    await AutofixQueue.setState({
+      directory: cfg.directory,
+      project_id: cfg.project_id,
+      profile: cfg.profile,
+      status: abort.signal.aborted ? "idle" : "idle",
+      active_run_id: null,
+      stop_requested: false,
+    })
+  }
+
+  async function one(cfg: ResolvedTarget, feedbackID: string, abort: AbortController) {
+    await preflight(cfg)
+    await AutofixQueue.syncProject(cfg)
+    const feedback = await AutofixQueue.getFeedback(feedbackID)
+    if (!feedback) throw new Error("Autofix feedback not found")
+    if (active.has(feedback.status)) throw new Error("Autofix feedback is already running")
+    const run = await queued(cfg, feedback.id)
+    await AutofixQueue.setState({
+      directory: cfg.directory,
+      project_id: cfg.project_id,
+      profile: cfg.profile,
+      status: "running",
+      active_run_id: run.id,
+      stop_requested: false,
+      note: undefined,
+    })
+    await runOne(cfg, run.id, abort.signal)
+    await AutofixQueue.setState({
+      directory: cfg.directory,
+      project_id: cfg.project_id,
+      profile: cfg.profile,
+      status: "idle",
+      active_run_id: null,
+      stop_requested: false,
+    })
+  }
+
+  async function launch(cfg: ResolvedTarget, work: (abort: AbortController) => Promise<void>, force = false) {
+    if (jobs.has(cfg.project_id)) {
+      if (force) throw new Error("AutoCodingFix is already running")
+      return
+    }
+    await using _ = await Lock.write(`autofix:${cfg.project_id}`)
+    if (jobs.has(cfg.project_id)) {
+      if (force) throw new Error("AutoCodingFix is already running")
+      return
+    }
+    const abort = new AbortController()
+    const promise = work(abort)
+      .catch(async (err) => {
+        await AutofixQueue.setState({
+          directory: cfg.directory,
+          project_id: cfg.project_id,
+          profile: cfg.profile,
+          status: "blocked",
+          note: err instanceof Error ? err.message : String(err),
+          active_run_id: null,
+          stop_requested: false,
+        })
+      })
+      .finally(() => {
+        jobs.delete(cfg.project_id)
+      })
+    jobs.set(cfg.project_id, { abort, promise })
+  }
+
+  export async function start(projectDir: string) {
+    const cfg = await target(projectDir)
+    await AutofixQueue.repair(cfg)
+    await launch(cfg, (abort) => loop(cfg, abort))
+  }
+
+  export async function startFeedback(projectDir: string, feedbackID: string) {
+    const cfg = await target(projectDir)
+    await AutofixQueue.repair(cfg)
+    await launch(cfg, (abort) => one(cfg, feedbackID, abort), true)
+  }
+
+  export async function resetFeedback(projectDir: string, feedbackID: string) {
+    const cfg = await target(projectDir)
+    if (jobs.has(cfg.project_id)) throw new Error("AutoCodingFix is already running")
+    const clean = await collect(cfg, feedbackID)
+    await AutofixQueue.reset(cfg, feedbackID)
+    await Promise.all(clean.sessions.map((item) => Session.remove(item as Parameters<typeof Session.remove>[0])))
+    await Promise.all(clean.files.map((item) => rm(item, { recursive: true, force: true }).catch(() => undefined)))
+  }
+
+  export async function runFeedback(runID: string) {
+    const detail = await AutofixQueue.detail(runID)
+    if (!detail?.feedback) throw new Error("Autofix run not found")
+    const cfg = await target(Instance.directory)
+    await runOne(cfg, runID)
+    const run = await AutofixQueue.getRun(runID)
+    if (!run) throw new Error("Autofix run disappeared")
+    return run
+  }
+
+  export async function continueRun(runID: string, extra?: string) {
+    const detail = await AutofixQueue.detail(runID)
+    if (!detail?.feedback) throw new Error("Autofix run not found")
+    const cfg = await target(Instance.directory)
+    await AutofixQueue.repair(cfg)
+    if (jobs.has(cfg.project_id)) throw new Error("AutoCodingFix is already running")
+    const run = await queued(cfg, detail.feedback.id)
+    const seed = detail.run.session_id
+      ? await Session.fork({ sessionID: detail.run.session_id as Parameters<typeof Session.fork>[0]["sessionID"] }).catch(
+          () => undefined,
+        )
+      : undefined
+    await AutofixQueue.log({
+      directory: cfg.directory,
+      project_id: cfg.project_id,
+      run_id: run.id,
+      feedback_id: detail.feedback.id,
+      phase: "queued",
+      level: "info",
+      message: extra?.trim() ? `Continue from run ${detail.run.id}: ${extra.trim()}` : `Continue from run ${detail.run.id}`,
+    })
+    await launch(
+      cfg,
+      async (abort) => {
+        await AutofixQueue.setState({
+          directory: cfg.directory,
+          project_id: cfg.project_id,
+          profile: cfg.profile,
+          status: "running",
+          active_run_id: run.id,
+          stop_requested: false,
+          note: undefined,
+        })
+        await runOne(cfg, run.id, abort.signal, {
+          session_id: seed?.id,
+          extra,
+          plan: detail.run.plan && detail.run.status !== "blocked" ? detail.run.plan : undefined,
+          issue: detail.run.status === "blocked" ? undefined : detail.run.failure_reason,
+        })
+        await AutofixQueue.setState({
+          directory: cfg.directory,
+          project_id: cfg.project_id,
+          profile: cfg.profile,
+          status: "idle",
+          active_run_id: null,
+          stop_requested: false,
+        })
+      },
+      true,
+    )
+    return run
+  }
+
+  export async function stop(projectDir: string) {
+    const cfg = await target(projectDir)
+    const job = jobs.get(cfg.project_id)
+    if (!job) {
+      await AutofixQueue.setState({
+        directory: cfg.directory,
+        project_id: cfg.project_id,
+        profile: cfg.profile,
+        status: "idle",
+        stop_requested: false,
+      })
+      return
+    }
+    await AutofixQueue.setState({
+      directory: cfg.directory,
+      project_id: cfg.project_id,
+      profile: cfg.profile,
+      status: "stopping",
+      stop_requested: true,
+    })
+    const summary = await AutofixQueue.summary({
+      directory: cfg.directory,
+      project_id: cfg.project_id,
+      profile: cfg.profile,
+      supported: true,
+    })
+    if (summary.active_run?.session_id) {
+      await SessionPrompt.cancel(summary.active_run.session_id as Parameters<typeof SessionPrompt.cancel>[0]).catch(() => undefined)
+    }
+    job?.abort.abort()
+    await job?.promise
+  }
+}
