@@ -152,6 +152,123 @@ export const AutofixRoutes = lazy(() =>
       },
     )
     .post(
+      "/feedback/:feedbackID/mute",
+      describeRoute({
+        summary: "Mute autofix feedback",
+        description: "Mark one mirrored feedback item as muted so queue execution skips it.",
+        operationId: "experimental.autofix.muteFeedback",
+        responses: {
+          200: {
+            description: "Autofix summary",
+            content: {
+              "application/json": {
+                schema: resolver(AutofixSchema.summary),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          feedbackID: z.string(),
+        }),
+      ),
+      async (c) => {
+        const cfg = await AutofixConfig.resolveForDirectory(Instance.directory)
+        if (!cfg) throw new Error("Autofix is not available for the current project")
+        const { feedbackID } = c.req.valid("param")
+        await AutofixQueue.setMuted(cfg, feedbackID, true)
+        const result = await AutofixQueue.summary({
+          directory: Instance.directory,
+          project_id: Instance.project.id,
+          profile: cfg.profile,
+          supported: true,
+        })
+        result.state.branch = await LocalGitFlow.branch(Instance.directory).catch(() => undefined)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/feedback/:feedbackID/unmute",
+      describeRoute({
+        summary: "Unmute autofix feedback",
+        description: "Restore one muted feedback item so it can rejoin queue execution.",
+        operationId: "experimental.autofix.unmuteFeedback",
+        responses: {
+          200: {
+            description: "Autofix summary",
+            content: {
+              "application/json": {
+                schema: resolver(AutofixSchema.summary),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          feedbackID: z.string(),
+        }),
+      ),
+      async (c) => {
+        const cfg = await AutofixConfig.resolveForDirectory(Instance.directory)
+        if (!cfg) throw new Error("Autofix is not available for the current project")
+        const { feedbackID } = c.req.valid("param")
+        await AutofixQueue.setMuted(cfg, feedbackID, false)
+        const result = await AutofixQueue.summary({
+          directory: Instance.directory,
+          project_id: Instance.project.id,
+          profile: cfg.profile,
+          supported: true,
+        })
+        result.state.branch = await LocalGitFlow.branch(Instance.directory).catch(() => undefined)
+        return c.json(result)
+      },
+    )
+    .post(
+      "/feedback/:feedbackID/delete",
+      describeRoute({
+        summary: "Delete autofix feedback",
+        description: "Delete one mirrored feedback item together with its local run history and artifacts.",
+        operationId: "experimental.autofix.deleteFeedback",
+        responses: {
+          200: {
+            description: "Autofix summary",
+            content: {
+              "application/json": {
+                schema: resolver(AutofixSchema.summary),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          feedbackID: z.string(),
+        }),
+      ),
+      async (c) => {
+        const cfg = await AutofixConfig.resolveForDirectory(Instance.directory)
+        if (!cfg) throw new Error("Autofix is not available for the current project")
+        const { feedbackID } = c.req.valid("param")
+        await AutofixRunner.deleteFeedback(Instance.directory, feedbackID)
+        const result = await AutofixQueue.summary({
+          directory: Instance.directory,
+          project_id: Instance.project.id,
+          profile: cfg.profile,
+          supported: true,
+        })
+        result.state.branch = await LocalGitFlow.branch(Instance.directory).catch(() => undefined)
+        return c.json(result)
+      },
+    )
+    .post(
       "/stop",
       describeRoute({
         summary: "Stop autofix",

@@ -44,7 +44,7 @@ export namespace CellPackager {
         return stat
           ? {
               path: item,
-              mtime: stat.mtimeMs,
+              mtime: Number(stat.mtimeMs),
             }
           : undefined
       })

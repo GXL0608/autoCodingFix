@@ -27,6 +27,7 @@ const statusText: Record<string, string> = {
   committing: "提交中",
   packaging: "打包中",
   done: "已完成",
+  muted: "已屏蔽",
   blocked: "已阻塞",
   failed: "已失败",
   stopped: "已停止",
@@ -64,6 +65,7 @@ const sample = JSON.stringify(
 function ink(status?: string) {
   if (status === "done" || status === "verified") return "text-emerald-700 dark:text-emerald-300"
   if (status === "failed" || status === "error") return "text-rose-700 dark:text-rose-300"
+  if (status === "muted") return "text-zinc-700 dark:text-zinc-300"
   if (status === "blocked" || status === "warn" || status === "stopping") return "text-amber-700 dark:text-amber-300"
   if (["analyzing", "implementing", "verifying", "committing", "packaging", "running", "info"].includes(status ?? ""))
     return "text-sky-700 dark:text-sky-300"
@@ -75,11 +77,21 @@ function pill(status?: string) {
     return "border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
   if (status === "failed" || status === "error")
     return "border border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300"
+  if (status === "muted") return "border border-zinc-500/30 bg-zinc-500/10 text-zinc-700 dark:text-zinc-300"
   if (status === "blocked" || status === "warn" || status === "stopping")
     return "border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"
   if (["analyzing", "implementing", "verifying", "committing", "packaging", "running", "info"].includes(status ?? ""))
     return "border border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300"
   return "border border-border-weak-base bg-surface-raised-base text-text-base"
+}
+
+function view(item?: { muted?: boolean; status?: string }) {
+  if (item?.muted) return "muted"
+  return item?.status
+}
+
+function work(status?: string) {
+  return ["analyzing", "implementing", "verifying", "committing", "packaging"].includes(status ?? "")
 }
 
 function label(status?: string) {
@@ -189,14 +201,14 @@ export default function AutofixPage() {
   const total = createMemo(() => {
     const item = summary()?.state.counts
     if (!item) return 0
-    return item.queued + item.running + item.done + item.failed + item.blocked
+    return item.queued + item.running + item.done + item.failed + item.blocked + item.muted
   })
   const done = createMemo(() => {
     const item = summary()?.state.counts
     if (!item) return 0
-    return item.done + item.failed + item.blocked
+    return item.done + item.failed + item.blocked + item.muted
   })
-  const pct = createMemo(() => (total() ? Math.round((done() / total()) * 100) : 0))
+  const pct = createMemo(() => (total() ? Math.round((done() / total()) * 100) : items().length > 0 ? 100 : 0))
 
   const [detail, detailCtl] = createResource(
     () => ({
@@ -304,6 +316,14 @@ export default function AutofixPage() {
   const startOne = () => {
     const item = picked()
     if (!item) return Promise.resolve()
+    if (item.muted) {
+      showToast({
+        variant: "error",
+        title: "当前反馈已屏蔽",
+        description: `反馈 #${item.external_id} 需要先恢复后才能执行。`,
+      })
+      return Promise.resolve()
+    }
     return act("one", () => sdk.client.experimental.autofix.startFeedback({ feedbackID: item.id }))
   }
   const resetOne = () => {
@@ -340,6 +360,39 @@ export default function AutofixPage() {
   }
 
   const canContinue = (status?: string) => ["blocked", "failed", "stopped"].includes(status ?? "")
+
+  const muteOne = (item: AutofixFeedback) =>
+    act(`mute:${item.id}`, async () => {
+      await sdk.client.experimental.autofix.muteFeedback({ feedbackID: item.id })
+      showToast({
+        title: "已屏蔽反馈",
+        description: `反馈 #${item.external_id} 不会再参与顺序执行。`,
+      })
+    })
+
+  const unmuteOne = (item: AutofixFeedback) =>
+    act(`unmute:${item.id}`, async () => {
+      await sdk.client.experimental.autofix.unmuteFeedback({ feedbackID: item.id })
+      showToast({
+        title: "已恢复反馈",
+        description: `反馈 #${item.external_id} 已恢复为可执行状态。`,
+      })
+    })
+
+  const deleteOne = (item: AutofixFeedback) => {
+    if (feedbackID() === item.id) {
+      setFeedbackID(undefined)
+      setRunID(undefined)
+      detailCtl.mutate(undefined)
+    }
+    return act(`delete:${item.id}`, async () => {
+      await sdk.client.experimental.autofix.deleteFeedback({ feedbackID: item.id })
+      showToast({
+        title: "已删除反馈",
+        description: `反馈 #${item.external_id} 及其本地执行记录已移除。`,
+      })
+    })
+  }
 
   function DialogImport() {
     const [body, setBody] = createSignal("")
@@ -389,12 +442,17 @@ export default function AutofixPage() {
     }
 
     return (
-      <Dialog title="导入本地反馈" class="w-full max-w-[860px] mx-auto">
-        <div class="flex flex-col gap-4 p-6 pt-0">
+      <Dialog
+        title="导入本地反馈"
+        size="x-large"
+        class="w-full max-w-[860px] mx-auto [&_[data-slot=dialog-body]]:overflow-visible"
+      >
+        <div class="flex max-h-[calc(100vh-168px)] min-h-0 flex-col gap-4 overflow-y-auto p-6 pt-0 pr-5">
           <div class="rounded-xl border border-border-weak-base bg-surface-raised-base px-4 py-3">
             <div class="text-13-medium text-text-strong">导入说明</div>
             <div class="mt-2 text-12-regular text-text-weak whitespace-pre-wrap break-words">
               导入数据会直接写入当前项目的 AutoCodingFix 反馈镜像表，左侧列表、执行、重置、历史记录都会继续走现有逻辑。
+              本地导入只会写入你当前粘贴或选择的 JSON 数据，不会额外同步数据库反馈；如果要拉数据库数据，请单独点击上方“同步全部反馈”。
               最简单可以直接导入 JSON 数组。`external_id` 必填，`recognized_text` 建议填写；`created_at`、`source`、
               `feedback_token`、`device_id`、`recognize_success` 等字段都可以省略，系统会自动补默认值。
             </div>
@@ -427,7 +485,7 @@ export default function AutofixPage() {
             value={body()}
             onChange={setBody}
             placeholder='可直接粘贴 JSON。最简单格式是 [{"external_id":10001,"recognized_text":"反馈内容"}]。'
-            class="max-h-[240px] w-full overflow-y-auto font-mono text-xs"
+            class="min-h-[260px] max-h-[360px] w-full overflow-y-auto font-mono text-xs"
           />
 
           <div class="rounded-xl border border-border-weak-base bg-surface-base px-4 py-3">
@@ -589,6 +647,9 @@ export default function AutofixPage() {
                         已失败 {sum().state.counts.failed}
                       </span>
                       <span class="rounded-full bg-surface-raised-base px-2 py-1 text-11-regular text-text-base">
+                        已屏蔽 {sum().state.counts.muted}
+                      </span>
+                      <span class="rounded-full bg-surface-raised-base px-2 py-1 text-11-regular text-text-base">
                         已阻塞 {sum().state.counts.blocked}
                       </span>
                     </div>
@@ -630,8 +691,7 @@ export default function AutofixPage() {
                   const sel = createMemo(() => feedbackID() === item.id)
                   const run = createMemo(() => summary()?.active_run?.feedback_id === item.id)
                   return (
-                    <button
-                      type="button"
+                    <div
                       class="w-full rounded-xl border px-2.5 py-2.5 text-left transition-colors"
                       classList={{
                         "border-sky-500 bg-sky-500/18 text-sky-950 dark:text-sky-50 shadow-sm ring-1 ring-sky-500/35": sel() && run(),
@@ -639,36 +699,84 @@ export default function AutofixPage() {
                         "border-amber-500/50 bg-amber-500/12": !sel() && run(),
                         "border-border-weak-base bg-surface-base hover:bg-surface-base-hover": !sel() && !run(),
                       }}
-                      onClick={() => {
-                        setFeedbackID(item.id)
-                        setRunID(undefined)
-                        detailCtl.mutate(undefined)
-                      }}
                     >
-                      <div class="flex items-center gap-2">
-                        <span class={`inline-flex items-center rounded-full px-2 py-0.5 text-11-medium ${pill(item.status)}`}>
-                          {label(item.status)}
-                        </span>
-                        <Show when={run()}>
-                          <span class="inline-flex items-center rounded-full px-2 py-0.5 text-11-medium border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
-                            当前执行
-                          </span>
-                        </Show>
-                        <span class={`text-11-medium ${sel() ? "text-current" : "text-text-weak"}`}>#{item.external_id}</span>
-                        <div class="grow" />
-                        <span class={`text-11-regular ${sel() ? "text-current/80" : "text-text-weak"}`}>{stamp(item.created_at)}</span>
-                      </div>
+                      <div class="flex gap-2">
+                        <button
+                          type="button"
+                          class="min-w-0 flex-1 text-left"
+                          onClick={() => {
+                            setFeedbackID(item.id)
+                            setRunID(undefined)
+                            detailCtl.mutate(undefined)
+                          }}
+                        >
+                          <div class="flex items-center gap-2">
+                            <span class={`inline-flex items-center rounded-full px-2 py-0.5 text-11-medium ${pill(view(item))}`}>
+                              {label(view(item))}
+                            </span>
+                            <Show when={run()}>
+                              <span class="inline-flex items-center rounded-full px-2 py-0.5 text-11-medium border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                                当前执行
+                              </span>
+                            </Show>
+                            <span class={`text-11-medium ${sel() ? "text-current" : "text-text-weak"}`}>#{item.external_id}</span>
+                            <div class="grow" />
+                            <span class={`text-11-regular ${sel() ? "text-current/80" : "text-text-weak"}`}>{stamp(item.created_at)}</span>
+                          </div>
 
-                      <div class={`mt-2 text-12-regular whitespace-pre-wrap break-words line-clamp-3 ${sel() ? "text-current" : "text-text-base"}`}>
-                        {text(item)}
-                      </div>
+                          <div
+                            class={`mt-2 text-12-regular whitespace-pre-wrap break-words line-clamp-3 ${sel() ? "text-current" : "text-text-base"}`}
+                          >
+                            {text(item)}
+                          </div>
 
-                      <div class={`mt-2 flex flex-wrap gap-3 text-11-regular ${sel() ? "text-current/80" : "text-text-weak"}`}>
-                        <span>{item.app_version || "暂无版本"}</span>
-                        <span>{item.language || "暂无语言"}</span>
-                        <span>{item.device_id || "暂无设备"}</span>
+                          <div class={`mt-2 flex flex-wrap gap-3 text-11-regular ${sel() ? "text-current/80" : "text-text-weak"}`}>
+                            <span>{item.app_version || "暂无版本"}</span>
+                            <span>{item.language || "暂无语言"}</span>
+                            <span>{item.device_id || "暂无设备"}</span>
+                          </div>
+                        </button>
+
+                        <div class="shrink-0 flex flex-col items-stretch gap-1">
+                          <Show
+                            when={item.muted}
+                            fallback={
+                              <Button
+                                type="button"
+                                size="small"
+                                variant="ghost"
+                                icon="shield"
+                                disabled={busy() !== undefined || run() || work(item.status)}
+                                onClick={() => void muteOne(item)}
+                              >
+                                屏蔽
+                              </Button>
+                            }
+                          >
+                            <Button
+                              type="button"
+                              size="small"
+                              variant="ghost"
+                              icon="reset"
+                              disabled={busy() !== undefined || run() || work(item.status)}
+                              onClick={() => void unmuteOne(item)}
+                            >
+                              恢复
+                            </Button>
+                          </Show>
+                          <Button
+                            type="button"
+                            size="small"
+                            variant="ghost"
+                            icon="trash"
+                            disabled={busy() !== undefined || run() || work(item.status)}
+                            onClick={() => void deleteOne(item)}
+                          >
+                            删除
+                          </Button>
+                        </div>
                       </div>
-                    </button>
+                    </div>
                   )
                 }}
               </For>
@@ -696,13 +804,31 @@ export default function AutofixPage() {
                   >
                     清除当前记录
                   </Button>
-                  <Button
-                    size="small"
-                    disabled={busy() !== undefined || summary()?.state.status === "running" || summary()?.state.status === "stopping"}
-                    onClick={() => void startOne()}
+                  <Show
+                    when={picked()?.muted}
+                    fallback={
+                      <Button
+                        size="small"
+                        disabled={busy() !== undefined || summary()?.state.status === "running" || summary()?.state.status === "stopping"}
+                        onClick={() => void startOne()}
+                      >
+                        执行当前反馈
+                      </Button>
+                    }
                   >
-                    执行当前反馈
-                  </Button>
+                    <Button
+                      size="small"
+                      variant="secondary"
+                      disabled={busy() !== undefined || summary()?.state.status === "running" || summary()?.state.status === "stopping"}
+                      onClick={() => {
+                        const item = picked()
+                        if (!item) return
+                        void unmuteOne(item)
+                      }}
+                    >
+                      恢复执行
+                    </Button>
+                  </Show>
                 </div>
               </Show>
             }
@@ -711,8 +837,8 @@ export default function AutofixPage() {
               {(item) => (
                 <div class="min-h-0 overflow-y-auto px-3 py-3 flex flex-col gap-3">
                   <div class="flex flex-wrap items-center gap-2">
-                    <span class={`inline-flex items-center rounded-full px-2.5 py-1 text-11-medium ${pill(item().status)}`}>
-                      {label(item().status)}
+                    <span class={`inline-flex items-center rounded-full px-2.5 py-1 text-11-medium ${pill(view(item()))}`}>
+                      {label(view(item()))}
                     </span>
                     <Show when={summary()?.active_run?.feedback_id === item().id}>
                       <span class="inline-flex items-center rounded-full px-2.5 py-1 text-11-medium border border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300">

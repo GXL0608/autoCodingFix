@@ -58,6 +58,9 @@ export const AutofixFeedbackTable = sqliteTable(
     recognize_error: text(),
     recognize_response: text({ mode: "json" }),
     meta: text({ mode: "json" }),
+    muted: integer({ mode: "boolean" })
+      .notNull()
+      .$default(() => false),
     status: text().notNull().$type<AutofixSchema.FeedbackStatus>(),
     note: text(),
     last_run_id: text(),

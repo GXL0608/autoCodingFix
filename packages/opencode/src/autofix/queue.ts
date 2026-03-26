@@ -19,6 +19,7 @@ export namespace AutofixQueue {
     return {
       queued: 0,
       running: 0,
+      muted: 0,
       blocked: 0,
       failed: 0,
       done: 0,
@@ -72,6 +73,7 @@ export namespace AutofixQueue {
       recognize_response: row.recognize_response ?? undefined,
       uploader: row.uploader ?? undefined,
       meta: row.meta ?? undefined,
+      muted: row.muted,
       status: row.status,
       note: row.note ?? undefined,
       last_run_id: row.last_run_id ?? undefined,
@@ -262,6 +264,7 @@ export namespace AutofixQueue {
             recognize_error: item.recognize_error ?? null,
             recognize_response: item.recognize_response ?? null,
             meta: item.meta ?? null,
+            muted: prev?.muted ?? false,
             status: next,
             note: why ?? prev?.note ?? null,
             last_run_id: prev?.last_run_id ?? null,
@@ -289,6 +292,7 @@ export namespace AutofixQueue {
               recognize_error: item.recognize_error ?? null,
               recognize_response: item.recognize_response ?? null,
               meta: item.meta ?? null,
+              muted: prev?.muted ?? false,
               status: next,
               note: why ?? prev?.note ?? null,
             },
@@ -320,6 +324,10 @@ export namespace AutofixQueue {
     })
     const rows = await feedbackRows(project_id)
     for (const item of rows) {
+      if (item.muted) {
+        next.counts.muted += 1
+        continue
+      }
       if (item.status === "queued") next.counts.queued += 1
       if (item.status === "blocked") next.counts.blocked += 1
       if (item.status === "failed") next.counts.failed += 1
@@ -475,6 +483,7 @@ export namespace AutofixQueue {
           and(
             eq(AutofixFeedbackTable.project_id, project_id),
             eq(AutofixFeedbackTable.status, "queued"),
+            eq(AutofixFeedbackTable.muted, false),
           ),
         )
         .orderBy(asc(AutofixFeedbackTable.created_at), asc(AutofixFeedbackTable.external_id))
@@ -500,6 +509,22 @@ export namespace AutofixQueue {
         .where(eq(AutofixFeedbackTable.id, id))
         .run(),
     )
+  }
+
+  export async function setMuted(input: { directory: string; project_id: string; profile: string }, id: string, muted: boolean) {
+    const row = Database.use((db) => db.select().from(AutofixFeedbackTable).where(eq(AutofixFeedbackTable.id, id)).get())
+    if (!row) throw new Error("Autofix feedback not found")
+    if (active(row.status)) throw new Error("Autofix feedback is already running")
+    Database.use((db) =>
+      db
+        .update(AutofixFeedbackTable)
+        .set({
+          muted,
+        })
+        .where(eq(AutofixFeedbackTable.id, id))
+        .run(),
+    )
+    return broadcast(input.directory, input.project_id, input.profile)
   }
 
   export async function repair(target: ResolvedTarget) {
@@ -568,6 +593,30 @@ export namespace AutofixQueue {
       active_run_id: null,
       stop_requested: false,
     })
+  }
+
+  export async function remove(target: ResolvedTarget, id: string) {
+    const row = Database.use((db) => db.select().from(AutofixFeedbackTable).where(eq(AutofixFeedbackTable.id, id)).get())
+    if (!row) throw new Error("Autofix feedback not found")
+    if (active(row.status)) throw new Error("Autofix feedback is already running")
+    const runs = Database.use((db) =>
+      db.select({ id: AutofixRunTable.id }).from(AutofixRunTable).where(eq(AutofixRunTable.feedback_id, id)).all(),
+    )
+    Database.use((db) => db.delete(AutofixFeedbackTable).where(eq(AutofixFeedbackTable.id, id)).run())
+    const state = await stateRow(target.project_id)
+    if (state?.active_run_id && runs.some((item) => item.id === state.active_run_id)) {
+      await setState({
+        directory: target.directory,
+        project_id: target.project_id,
+        profile: target.profile,
+        status: "idle",
+        note: undefined,
+        active_run_id: null,
+        stop_requested: false,
+      })
+      return
+    }
+    await broadcast(target.directory, target.project_id, target.profile)
   }
 
   export async function createRun(input: {

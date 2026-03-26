@@ -151,4 +151,73 @@ describe("autofix.queue.importFeedback", () => {
     expect(state?.time_last_sync).toBe(555)
     expect(state?.active_run_id).toBe("run-7")
   })
+
+  test("mutes queued feedback without losing the original status", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const { project } = await Project.fromDirectory(tmp.path)
+    const target = cfg(project.id, tmp.path)
+
+    await AutofixQueue.importFeedback(target, [
+      item({
+        id: 11,
+        at: 100,
+        text: "先屏蔽这条反馈",
+      }),
+      item({
+        id: 12,
+        at: 200,
+        text: "继续执行这条反馈",
+      }),
+    ])
+
+    const row = (await AutofixQueue.listFeedback(project.id)).find((item) => item.external_id === 11)
+    expect(row).toBeDefined()
+
+    await AutofixQueue.setMuted(target, row!.id, true)
+
+    const next = (await AutofixQueue.listFeedback(project.id)).find((item) => item.external_id === 11)
+    expect(next?.status).toBe("queued")
+    expect(next?.muted).toBe(true)
+
+    const queued = await AutofixQueue.next(project.id)
+    expect(queued?.external_id).toBe(12)
+
+    const summary = await AutofixQueue.summary({
+      directory: tmp.path,
+      project_id: project.id,
+      profile: target.profile,
+      supported: true,
+    })
+    expect(summary.state.counts.muted).toBe(1)
+    expect(summary.state.counts.queued).toBe(1)
+  })
+
+  test("deletes feedback and cascades local run history", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const { project } = await Project.fromDirectory(tmp.path)
+    const target = cfg(project.id, tmp.path)
+
+    await AutofixQueue.importFeedback(target, [
+      item({
+        id: 21,
+        at: 100,
+        text: "删除这条反馈",
+      }),
+    ])
+
+    const row = (await AutofixQueue.listFeedback(project.id)).find((item) => item.external_id === 21)
+    expect(row).toBeDefined()
+
+    const run = await AutofixQueue.createRun({
+      project_id: project.id,
+      feedback_id: row!.id,
+      status: "failed",
+    })
+    await AutofixQueue.setStatus(row!.id, "failed", "失败记录", run.id)
+
+    await AutofixQueue.remove(target, row!.id)
+
+    expect(await AutofixQueue.listFeedback(project.id)).toHaveLength(0)
+    expect(await AutofixQueue.listRuns(project.id)).toHaveLength(0)
+  })
 })

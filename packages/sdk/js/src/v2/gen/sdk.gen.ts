@@ -26,10 +26,14 @@ import type {
   EventTuiPromptAppend,
   EventTuiSessionSelect,
   EventTuiToastShow,
+  ExperimentalAutofixDeleteFeedbackErrors,
+  ExperimentalAutofixDeleteFeedbackResponses,
   ExperimentalAutofixFeedbackResponses,
   ExperimentalAutofixGetResponses,
   ExperimentalAutofixImportFeedbackErrors,
   ExperimentalAutofixImportFeedbackResponses,
+  ExperimentalAutofixMuteFeedbackErrors,
+  ExperimentalAutofixMuteFeedbackResponses,
   ExperimentalAutofixResetFeedbackErrors,
   ExperimentalAutofixResetFeedbackResponses,
   ExperimentalAutofixRunContinueErrors,
@@ -45,6 +49,8 @@ import type {
   ExperimentalAutofixStopResponses,
   ExperimentalAutofixSyncErrors,
   ExperimentalAutofixSyncResponses,
+  ExperimentalAutofixUnmuteFeedbackErrors,
+  ExperimentalAutofixUnmuteFeedbackResponses,
   ExperimentalResourceListResponses,
   ExperimentalSessionListResponses,
   ExperimentalWorkspaceCreateErrors,
@@ -1183,6 +1189,114 @@ export class Autofix extends HeyApiClient {
       ThrowOnError
     >({
       url: "/experimental/autofix/feedback/{feedbackID}/reset",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Mute autofix feedback
+   *
+   * Mark one mirrored feedback item as muted so queue execution skips it.
+   */
+  public muteFeedback<ThrowOnError extends boolean = false>(
+    parameters: {
+      feedbackID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "feedbackID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalAutofixMuteFeedbackResponses,
+      ExperimentalAutofixMuteFeedbackErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/autofix/feedback/{feedbackID}/mute",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Unmute autofix feedback
+   *
+   * Restore one muted feedback item so it can rejoin queue execution.
+   */
+  public unmuteFeedback<ThrowOnError extends boolean = false>(
+    parameters: {
+      feedbackID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "feedbackID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalAutofixUnmuteFeedbackResponses,
+      ExperimentalAutofixUnmuteFeedbackErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/autofix/feedback/{feedbackID}/unmute",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Delete autofix feedback
+   *
+   * Delete one mirrored feedback item together with its local run history and artifacts.
+   */
+  public deleteFeedback<ThrowOnError extends boolean = false>(
+    parameters: {
+      feedbackID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "feedbackID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalAutofixDeleteFeedbackResponses,
+      ExperimentalAutofixDeleteFeedbackErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/autofix/feedback/{feedbackID}/delete",
       ...options,
       ...params,
     })

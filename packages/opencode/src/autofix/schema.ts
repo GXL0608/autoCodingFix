@@ -96,6 +96,7 @@ export namespace AutofixSchema {
     .object({
       queued: z.number().int(),
       running: z.number().int(),
+      muted: z.number().int(),
       blocked: z.number().int(),
       failed: z.number().int(),
       done: z.number().int(),
@@ -151,6 +152,7 @@ export namespace AutofixSchema {
       recognize_response: z.any().optional(),
       uploader: z.any().optional(),
       meta: z.any().optional(),
+      muted: z.boolean(),
       status: feedback_status,
       note: z.string().optional(),
       last_run_id: z.string().optional(),

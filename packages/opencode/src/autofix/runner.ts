@@ -77,7 +77,6 @@ export namespace AutofixRunner {
       throw new Error("build-mac-arm64-dmg.sh is missing")
     await LocalGitFlow.ensureClean(cfg.directory)
     await LocalGitFlow.branch(cfg.directory)
-    await CellFeedbackSource.pull(cfg.source, {}, 1)
   }
 
   async function audio(cfg: ResolvedTarget, feedback: Awaited<ReturnType<typeof AutofixQueue.getFeedback>>) {
@@ -342,7 +341,6 @@ export namespace AutofixRunner {
 
   async function loop(cfg: ResolvedTarget, abort: AbortController) {
     await preflight(cfg)
-    await AutofixQueue.syncProject(cfg)
     await AutofixQueue.setState({
       directory: cfg.directory,
       project_id: cfg.project_id,
@@ -383,9 +381,9 @@ export namespace AutofixRunner {
 
   async function one(cfg: ResolvedTarget, feedbackID: string, abort: AbortController) {
     await preflight(cfg)
-    await AutofixQueue.syncProject(cfg)
     const feedback = await AutofixQueue.getFeedback(feedbackID)
     if (!feedback) throw new Error("Autofix feedback not found")
+    if (feedback.muted) throw new Error("Autofix feedback is muted")
     if (active.has(feedback.status)) throw new Error("Autofix feedback is already running")
     const run = await queued(cfg, feedback.id)
     await AutofixQueue.setState({
@@ -454,6 +452,14 @@ export namespace AutofixRunner {
     if (jobs.has(cfg.project_id)) throw new Error("AutoCodingFix is already running")
     const clean = await collect(cfg, feedbackID)
     await AutofixQueue.reset(cfg, feedbackID)
+    await Promise.all(clean.sessions.map((item) => Session.remove(item as Parameters<typeof Session.remove>[0])))
+    await Promise.all(clean.files.map((item) => rm(item, { recursive: true, force: true }).catch(() => undefined)))
+  }
+
+  export async function deleteFeedback(projectDir: string, feedbackID: string) {
+    const cfg = await target(projectDir)
+    const clean = await collect(cfg, feedbackID)
+    await AutofixQueue.remove(cfg, feedbackID)
     await Promise.all(clean.sessions.map((item) => Session.remove(item as Parameters<typeof Session.remove>[0])))
     await Promise.all(clean.files.map((item) => rm(item, { recursive: true, force: true }).catch(() => undefined)))
   }

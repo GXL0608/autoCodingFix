@@ -1,0 +1,1 @@
+ALTER TABLE `autofix_feedback` ADD COLUMN `muted` integer NOT NULL DEFAULT 0;

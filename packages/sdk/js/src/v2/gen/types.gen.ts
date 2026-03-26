@@ -960,6 +960,7 @@ export type EventWorktreeFailed = {
 export type AutofixCounts = {
   queued: number
   running: number
+  muted: number
   blocked: number
   failed: number
   done: number
@@ -1878,6 +1879,7 @@ export type AutofixFeedback = {
   recognize_response?: unknown
   uploader?: unknown
   meta?: unknown
+  muted: boolean
   status:
     | "queued"
     | "analyzing"
@@ -2940,6 +2942,102 @@ export type ExperimentalAutofixResetFeedbackResponses = {
 
 export type ExperimentalAutofixResetFeedbackResponse =
   ExperimentalAutofixResetFeedbackResponses[keyof ExperimentalAutofixResetFeedbackResponses]
+
+export type ExperimentalAutofixMuteFeedbackData = {
+  body?: never
+  path: {
+    feedbackID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/autofix/feedback/{feedbackID}/mute"
+}
+
+export type ExperimentalAutofixMuteFeedbackErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalAutofixMuteFeedbackError =
+  ExperimentalAutofixMuteFeedbackErrors[keyof ExperimentalAutofixMuteFeedbackErrors]
+
+export type ExperimentalAutofixMuteFeedbackResponses = {
+  /**
+   * Autofix summary
+   */
+  200: AutofixSummary
+}
+
+export type ExperimentalAutofixMuteFeedbackResponse =
+  ExperimentalAutofixMuteFeedbackResponses[keyof ExperimentalAutofixMuteFeedbackResponses]
+
+export type ExperimentalAutofixUnmuteFeedbackData = {
+  body?: never
+  path: {
+    feedbackID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/autofix/feedback/{feedbackID}/unmute"
+}
+
+export type ExperimentalAutofixUnmuteFeedbackErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalAutofixUnmuteFeedbackError =
+  ExperimentalAutofixUnmuteFeedbackErrors[keyof ExperimentalAutofixUnmuteFeedbackErrors]
+
+export type ExperimentalAutofixUnmuteFeedbackResponses = {
+  /**
+   * Autofix summary
+   */
+  200: AutofixSummary
+}
+
+export type ExperimentalAutofixUnmuteFeedbackResponse =
+  ExperimentalAutofixUnmuteFeedbackResponses[keyof ExperimentalAutofixUnmuteFeedbackResponses]
+
+export type ExperimentalAutofixDeleteFeedbackData = {
+  body?: never
+  path: {
+    feedbackID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/autofix/feedback/{feedbackID}/delete"
+}
+
+export type ExperimentalAutofixDeleteFeedbackErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalAutofixDeleteFeedbackError =
+  ExperimentalAutofixDeleteFeedbackErrors[keyof ExperimentalAutofixDeleteFeedbackErrors]
+
+export type ExperimentalAutofixDeleteFeedbackResponses = {
+  /**
+   * Autofix summary
+   */
+  200: AutofixSummary
+}
+
+export type ExperimentalAutofixDeleteFeedbackResponse =
+  ExperimentalAutofixDeleteFeedbackResponses[keyof ExperimentalAutofixDeleteFeedbackResponses]
 
 export type ExperimentalAutofixStopData = {
   body?: never
