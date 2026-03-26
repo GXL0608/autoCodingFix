@@ -7,7 +7,7 @@ import { TextField } from "@opencode-ai/ui/text-field"
 import { showToast } from "@opencode-ai/ui/toast"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate } from "@solidjs/router"
-import { type JSX, For, Show, createEffect, createMemo, createResource, createSignal, onCleanup } from "solid-js"
+import { type JSX, For, Show, batch, createEffect, createMemo, createResource, createSelector, createSignal, onCleanup } from "solid-js"
 import { useSDK } from "@/context/sdk"
 
 const stateText: Record<string, string> = {
@@ -171,6 +171,7 @@ export default function AutofixPage() {
   const sdk = useSDK()
   const navigate = useNavigate()
   const dialog = useDialog()
+  let listRef: HTMLDivElement | undefined
   const [busy, setBusy] = createSignal<string>()
   const [feedbackID, setFeedbackID] = createSignal<string>()
   const [runID, setRunID] = createSignal<string>()
@@ -191,6 +192,8 @@ export default function AutofixPage() {
   const live = createMemo(() => summary()?.active_run)
   const liveItem = createMemo(() => items().find((item) => item.id === live()?.feedback_id))
   const picked = createMemo(() => items().find((item) => item.id === feedbackID()))
+  const pickedRow = createSelector(feedbackID)
+  const liveRow = createSelector(() => live()?.feedback_id)
   const list = createMemo(() => (runs() ?? []).filter((item) => item.feedback_id === feedbackID()))
   const note = createMemo(() => {
     const item = picked()
@@ -233,6 +236,33 @@ export default function AutofixPage() {
     if (runID() && !resetID()) void detailCtl.refetch()
   }
 
+  const last = (item?: AutofixFeedback) => {
+    if (!item) return
+    if (resetID() === item.id) return
+    const run = live()
+    if (run?.feedback_id === item.id) return run.id
+    if (!item.last_run_id) return
+    return (runs() ?? []).find((row) => row.feedback_id === item.id && row.id === item.last_run_id)?.id
+  }
+
+  const keep = (top?: number) => {
+    if (top === undefined) return
+    requestAnimationFrame(() => {
+      if (!listRef) return
+      listRef.scrollTop = top
+    })
+  }
+
+  const pickOne = (item: AutofixFeedback) => {
+    const top = listRef?.scrollTop
+    batch(() => {
+      setFeedbackID(item.id)
+      setRunID(last(item))
+      detailCtl.mutate(undefined)
+    })
+    keep(top)
+  }
+
   createEffect(() => {
     const id = feedbackID()
     if (id && items().some((item) => item.id === id)) return
@@ -268,7 +298,7 @@ export default function AutofixPage() {
       return
     }
     if (runID() && list().some((row) => row.id === runID())) return
-    setRunID(list().find((row) => row.id === item.last_run_id)?.id)
+    setRunID(last(item))
   })
 
   createEffect(() => {
@@ -685,11 +715,14 @@ export default function AutofixPage() {
 
         <div class="min-h-0 flex-1 grid grid-cols-[300px_minmax(0,1fr)] gap-3 max-xl:grid-cols-1">
           <Card title="反馈列表" class="h-full" body="p-2 min-h-0 flex flex-col" action={<div class="text-11-regular text-text-weak">{items().length} 条</div>}>
-            <div class="min-h-0 overflow-y-auto pr-1 flex flex-col gap-2">
+            <div
+              ref={listRef}
+              class="min-h-0 overflow-y-auto pr-1 flex flex-col gap-2"
+            >
               <For each={items()}>
                 {(item) => {
-                  const sel = createMemo(() => feedbackID() === item.id)
-                  const run = createMemo(() => summary()?.active_run?.feedback_id === item.id)
+                  const sel = () => pickedRow(item.id)
+                  const run = () => liveRow(item.id)
                   return (
                     <div
                       class="w-full rounded-xl border px-2.5 py-2.5 text-left transition-colors"
@@ -704,11 +737,7 @@ export default function AutofixPage() {
                         <button
                           type="button"
                           class="min-w-0 flex-1 text-left"
-                          onClick={() => {
-                            setFeedbackID(item.id)
-                            setRunID(undefined)
-                            detailCtl.mutate(undefined)
-                          }}
+                          onClick={() => pickOne(item)}
                         >
                           <div class="flex items-center gap-2">
                             <span class={`inline-flex items-center rounded-full px-2 py-0.5 text-11-medium ${pill(view(item))}`}>

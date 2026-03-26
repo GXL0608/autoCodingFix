@@ -48,6 +48,75 @@ describe("autofix.analysis", () => {
     expect(schema.properties?.flows).toBeDefined()
   })
 
+  test("uses concise planning instructions and allows empty detail sections", async () => {
+    mock = spyOn(PromptModule.SessionPrompt, "prompt").mockResolvedValue({
+      info: {
+        role: "assistant",
+        structured: {
+          summary: "默认采用最小改动方案。",
+          scope: ["主界面播放区域"],
+          steps: ["对齐雾化内容和实际播放状态"],
+          acceptance: ["雾化显示与播放一致"],
+          architecture: [],
+          methods: [],
+          flows: [],
+          automatable: true,
+          blockers: [],
+        },
+      },
+    } as never)
+
+    await AutofixAnalyzer.analyze({
+      target: {
+        directory: "/tmp",
+        worktree: "/tmp",
+        project_id: "p",
+        profile: "cell",
+        remotes: [],
+        source: {
+          kind: "postgres",
+          dsn: "",
+          dsn_env: "",
+          table: "",
+          sync_batch: 1,
+        },
+        feedback: {
+          use_audio_when_text_missing: false,
+          max_audio_bytes: 1,
+        },
+        verify: {
+          kind: "electron_webview_smoke",
+          command: "",
+          startup_timeout_ms: 1,
+          healthy_window_ms: 1,
+        },
+        package: {
+          command: "",
+          artifact_glob: [],
+        },
+        version: {
+          kind: "suffix",
+          source: "root_package_json",
+          format: "",
+        },
+      },
+      run_id: "run",
+      session_id: "ses",
+      feedback_id: "fb",
+      external_id: 1,
+      recognized_text: "播放雾化不同步",
+    })
+
+    const req = mock.mock.calls[0]?.[0]
+    const text = req?.parts[0]
+
+    expect(text?.type).toBe("text")
+    if (text?.type !== "text") return
+    expect(text.text).toContain("简洁修复计划")
+    expect(text.text).toContain("不需要时返回空数组")
+    expect(text.text).not.toContain("不能有任何遗漏")
+  })
+
   test("retries blocked plans and prefers an automatable revision", async () => {
     mock = spyOn(PromptModule.SessionPrompt, "prompt")
     mock

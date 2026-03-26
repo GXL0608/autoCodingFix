@@ -25,8 +25,8 @@ export namespace AutofixAnalyzer {
   function text(ctx: RunCtx, extra?: string) {
     return [
       `反馈内容：${ctx.recognized_text?.trim() || "当前没有识别到可用文本。"}`,
-      "仔细分析反馈内容和当前项目代码，制定一份计划来解决反馈内容问题，输出计划的同时，必须要附带当前需要修改内容的关键的架构、关键的方法及其注释，将相关的、涉及到的所有功能及其逻辑全部捋顺，不能有任何遗漏，将这些内容展示出来，我要严格审查，发挥你最高的水平和最高的能力。",
-      "结构化计划要求如下：summary 写总体判断；scope 列出影响范围；steps 列出执行步骤；acceptance 列出验收标准；architecture 列出关键架构，每项必须包含 name、files、logic；methods 列出关键方法，每项必须包含 name、file、comment、logic；flows 列出相关功能与逻辑链路；automatable 表示是否可以安全自动执行；对于可通过工程判断解决的不确定性，不要放入 blockers，而是直接做决定并把假设写入 summary、scope、steps。",
+      "结合反馈内容和当前项目代码，输出一份能直接落地的简洁修复计划，优先保证判断准确、范围清晰、步骤可执行，不追求面面俱到的大而全分析。",
+      "结构化计划要求如下：summary 写总体判断和拟采用方案；scope 仅列直接受影响的页面、模块或文件；steps 只写关键执行步骤；acceptance 只写核心验收标准；architecture 仅在直接影响实现时填写关键模块，字段为 name、files、logic，不需要时返回空数组；methods 仅在直接影响修改时填写关键方法，字段为 name、file、comment、logic，不需要时返回空数组；flows 仅列与本次修复直接相关的链路，不需要时返回空数组；automatable 表示是否可以安全自动执行；只有在确实缺少必要资源、依赖、权限或存在明显不可逆风险时才填写 blockers，否则直接做工程判断，不要把可自行决策的问题放入 blockers。",
       extra?.trim() ? `补充要求：\n${extra.trim()}` : undefined,
     ]
       .filter(Boolean)
