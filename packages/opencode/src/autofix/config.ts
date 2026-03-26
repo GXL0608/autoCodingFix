@@ -6,7 +6,7 @@ import { Process } from "@/util/process"
 import type { ResolvedTarget } from "./types"
 
 const SSLMODE = new Set(["disable", "allow", "prefer", "require", "verify-ca", "verify-full"])
-const DSN = "postgres://opencode:opencode@182.92.74.187:9124/model_project?sslmode=prefer"
+const DSN = "postgres://opencode:opencode@182.92.74.187:9124/omnivoice_main?sslmode=prefer"
 
 export namespace AutofixConfig {
   function base(input: { directory: string; worktree: string; remotes: string[] }): ResolvedTarget {
