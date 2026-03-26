@@ -8,6 +8,7 @@ export namespace AutofixExecutor {
   const SYSTEM = [
     "你正在执行 AutoCodingFix 的全自动修改阶段。",
     "禁止向用户提问，禁止等待人工确认，遇到取舍时必须自行做出最合理的工程判断并直接执行。",
+    "修改当前反馈内容时，必须严格限制影响范围，不要影响到其他正常功能，不要对其他功能造成影响。",
     "需要运行命令时直接选择你认为正确且最稳妥的命令，不要把命令选择交还给用户。",
     "如果你仍然决定使用 question 工具，推荐答案必须放在第一个选项，并在 label 中追加 (Recommended)。",
   ].join("\n")
@@ -28,6 +29,7 @@ export namespace AutofixExecutor {
       ctx.meta ? `附加信息：\n${JSON.stringify(ctx.meta, null, 2)}` : undefined,
       `第 ${attempt} 次尝试`,
       `计划摘要：${plan.summary}`,
+      "修改当前反馈内容的时候，不要影响到其他正常功能，不要对其他功能造成影响。",
       `影响范围：\n${plan.scope.map((item) => `- ${item}`).join("\n")}`,
       `执行步骤：\n${plan.steps.map((item) => `- ${item}`).join("\n")}`,
       `验收标准：\n${plan.acceptance.map((item) => `- ${item}`).join("\n")}`,
