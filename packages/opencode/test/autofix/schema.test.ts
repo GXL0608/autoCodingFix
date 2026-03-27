@@ -114,6 +114,7 @@ describe("autofix.analysis", () => {
     if (text?.type !== "text") return
     expect(text.text).toContain("简洁修复计划")
     expect(text.text).toContain("不要影响到其他正常功能")
+    expect(text.text).toContain("不要影响当前项目正常运转")
     expect(text.text).toContain("不需要时返回空数组")
     expect(text.text).not.toContain("不能有任何遗漏")
   })
