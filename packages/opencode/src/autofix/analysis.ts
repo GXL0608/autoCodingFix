@@ -2,21 +2,11 @@ import { Session } from "@/session"
 import { SessionPrompt } from "@/session/prompt"
 import { pathToFileURL } from "url"
 import z from "zod"
+import { AutofixPrompt } from "./prompt"
 import { AutofixSchema } from "./schema"
 import type { RunCtx, TempAudio } from "./types"
 
 export namespace AutofixAnalyzer {
-  const SYSTEM = [
-    "你正在执行 AutoCodingFix 的全自动分析阶段。",
-    "禁止向用户提问，禁止等待人工确认，信息不足时必须自行做出最合理的工程判断。",
-    "如果存在多个实现方向，优先选择影响面最小、风险最低、兼容现有架构且最容易自动落地的方案。",
-    "修改当前反馈内容时，必须严格限制影响范围，不要影响到其他正常功能，不要对其他功能造成影响。",
-    "修改当前问题时，如果碰见与当前问题直接相关的代码存在不合理的架构问题，要及时修改优化，同样不要影响其他架构功能，不要影响当前项目正常运转。",
-    "对于可以通过阅读代码自行判断的歧义，必须直接做决定并继续，不要把这类问题标记为阻塞。",
-    "只有在缺少必要代码、资源、依赖、权限或会造成明显不可逆破坏时，才允许将 automatable 设为 false。",
-    "如果你仍然决定使用 question 工具，推荐答案必须放在第一个选项，并在 label 中追加 (Recommended)。",
-  ].join("\n")
-
   export function schema() {
     const raw = z.toJSONSchema(AutofixSchema.plan)
     if (raw.type !== "object") throw new Error("Autofix plan schema must be an object")
@@ -24,24 +14,12 @@ export namespace AutofixAnalyzer {
     return schema
   }
 
-  function text(ctx: RunCtx, extra?: string) {
-    return [
-      `反馈内容：${ctx.recognized_text?.trim() || "当前没有识别到可用文本。"}`,
-      "结合反馈内容和当前项目代码，输出一份能直接落地的简洁修复计划，优先保证判断准确、范围清晰、步骤可执行，不追求面面俱到的大而全分析。",
-      "修改当前反馈内容的时候，不要影响到其他正常功能，不要对其他功能造成影响。",
-      "修改当前问题的时候，碰见相关的代码存在不合理的架构问题，要及时的修改优化，同样不要影响其他架构功能，不要影响当前项目正常运转。",
-      "结构化计划要求如下：summary 写总体判断和拟采用方案；scope 仅列直接受影响的页面、模块或文件；steps 只写关键执行步骤；acceptance 只写核心验收标准；architecture 仅在直接影响实现时填写关键模块，字段为 name、files、logic，不需要时返回空数组；methods 仅在直接影响修改时填写关键方法，字段为 name、file、comment、logic，不需要时返回空数组；flows 仅列与本次修复直接相关的链路，不需要时返回空数组；automatable 表示是否可以安全自动执行；只有在确实缺少必要资源、依赖、权限或存在明显不可逆风险时才填写 blockers，否则直接做工程判断，不要把可自行决策的问题放入 blockers。",
-      extra?.trim() ? `补充要求：\n${extra.trim()}` : undefined,
-    ]
-      .filter(Boolean)
-      .join("\n")
-  }
-
-  async function run(ctx: RunCtx, audio?: TempAudio, extra?: string) {
+  async function run(ctx: RunCtx, audio?: TempAudio, extra?: string, prompt?: AutofixSchema.Prompt) {
+    const item = AutofixPrompt.analyze(ctx, extra, prompt)
     const msg = await SessionPrompt.prompt({
       sessionID: ctx.session_id as Parameters<typeof SessionPrompt.prompt>[0]["sessionID"],
       agent: "plan",
-      system: SYSTEM,
+      system: item.system,
       format: {
         type: "json_schema",
         schema: schema(),
@@ -50,7 +28,7 @@ export namespace AutofixAnalyzer {
       parts: [
         {
           type: "text",
-          text: text(ctx, extra),
+          text: item.text,
         },
         ...(audio
           ? [
@@ -81,9 +59,9 @@ export namespace AutofixAnalyzer {
       .join("\n\n")
   }
 
-  export async function analyze(ctx: RunCtx, audio?: TempAudio, extra?: string) {
-    const plan = await run(ctx, audio, extra)
+  export async function analyze(ctx: RunCtx, audio?: TempAudio, extra?: string, prompt?: AutofixSchema.Prompt) {
+    const plan = await run(ctx, audio, extra, prompt)
     if (plan.automatable || !plan.blockers?.length) return plan
-    return run(ctx, audio, retry(plan, extra))
+    return run(ctx, audio, retry(plan, extra), prompt)
   }
 }

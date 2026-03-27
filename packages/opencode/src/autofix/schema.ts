@@ -92,6 +92,21 @@ export namespace AutofixSchema {
     })
   export type Plan = z.infer<typeof plan>
 
+  export const prompt = z
+    .object({
+      analysis_system: z.string(),
+      analysis_user: z.string(),
+      build_system: z.string(),
+      build_user: z.string(),
+    })
+    .meta({
+      ref: "AutofixPrompt",
+    })
+  export type Prompt = z.infer<typeof prompt>
+
+  export const prompt_partial = prompt.partial()
+  export type PromptPartial = z.infer<typeof prompt_partial>
+
   export const counts = z
     .object({
       queued: z.number().int(),
@@ -120,6 +135,7 @@ export namespace AutofixSchema {
       last_sync_at: z.number().optional(),
       last_success_commit: z.string().optional(),
       last_success_version: z.string().optional(),
+      prompt: prompt.optional(),
       counts,
     })
     .meta({
@@ -314,6 +330,18 @@ export namespace AutofixSchema {
       ref: "AutofixContinueInput",
     })
   export type ContinueInput = z.infer<typeof continue_input>
+
+  export const prompt_input = z
+    .object({
+      analysis_system: z.string(),
+      analysis_user: z.string(),
+      build_system: z.string(),
+      build_user: z.string(),
+    })
+    .meta({
+      ref: "AutofixPromptInput",
+    })
+  export type PromptInput = z.infer<typeof prompt_input>
 
   export const summary = z
     .object({

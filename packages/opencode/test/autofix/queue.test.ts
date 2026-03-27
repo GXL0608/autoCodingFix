@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { AutofixPrompt } from "../../src/autofix/prompt"
 import { Project } from "../../src/project/project"
 import { AutofixQueue } from "../../src/autofix/queue"
 import { AutofixStateTable } from "../../src/autofix/autofix.sql"
@@ -150,6 +151,60 @@ describe("autofix.queue.importFeedback", () => {
     expect(state?.source_cursor_external_id).toBe(77)
     expect(state?.time_last_sync).toBe(555)
     expect(state?.active_run_id).toBe("run-7")
+  })
+
+  test("persists shared prompt across unrelated state updates", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const { project } = await Project.fromDirectory(tmp.path)
+    const target = cfg(project.id, tmp.path)
+
+    const prompt = {
+      ...AutofixPrompt.resolve(),
+      analysis_user: "反馈内容：{{feedback}}\n默认最小改动，不要影响其他正常功能。\n{{extra_block}}",
+    }
+
+    await AutofixQueue.setPrompt(target, prompt)
+
+    let summary = await AutofixQueue.summary({
+      directory: tmp.path,
+      project_id: project.id,
+      profile: target.profile,
+      supported: true,
+    })
+    expect(summary.state.prompt?.analysis_user).toBe(prompt.analysis_user)
+    expect(summary.state.prompt?.build_system).toBe(prompt.build_system)
+
+    await AutofixQueue.setState({
+      directory: tmp.path,
+      project_id: project.id,
+      profile: target.profile,
+      status: "running",
+      active_run_id: "run-99",
+    })
+
+    summary = await AutofixQueue.summary({
+      directory: tmp.path,
+      project_id: project.id,
+      profile: target.profile,
+      supported: true,
+    })
+    expect(summary.state.prompt?.analysis_user).toBe(prompt.analysis_user)
+    expect(summary.state.prompt?.build_system).toBe(prompt.build_system)
+  })
+
+  test("returns effective default prompt when no custom prompt is saved", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const { project } = await Project.fromDirectory(tmp.path)
+    const target = cfg(project.id, tmp.path)
+
+    const summary = await AutofixQueue.summary({
+      directory: tmp.path,
+      project_id: project.id,
+      profile: target.profile,
+      supported: true,
+    })
+
+    expect(summary.state.prompt).toEqual(AutofixPrompt.resolve())
   })
 
   test("mutes queued feedback without losing the original status", async () => {

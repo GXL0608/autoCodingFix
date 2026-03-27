@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray } from "@/storage/db"
 import { Database } from "@/storage/db"
 import { AutofixArtifactTable, AutofixAttemptTable, AutofixEventTable, AutofixFeedbackTable, AutofixRunTable, AutofixStateTable } from "@/storage/schema"
 import { ulid } from "ulid"
+import { AutofixPrompt } from "./prompt"
 import { AutofixSchema } from "./schema"
 import { AutofixEvent } from "./events"
 import { CellFeedbackSource } from "./source/postgres"
@@ -44,6 +45,7 @@ export namespace AutofixQueue {
       last_sync_at: row?.time_last_sync ?? undefined,
       last_success_commit: row?.last_success_commit ?? undefined,
       last_success_version: row?.last_success_version ?? undefined,
+      prompt: AutofixPrompt.resolve(row?.prompt ?? undefined),
       counts: counts(),
     } satisfies AutofixSchema.State
   }
@@ -372,6 +374,7 @@ export namespace AutofixQueue {
         | "active_run_id"
         | "last_success_commit"
         | "last_success_version"
+        | "prompt"
         | "stop_requested"
       >
     >,
@@ -390,6 +393,7 @@ export namespace AutofixQueue {
           active_run_id: input.active_run_id ?? null,
           last_success_commit: input.last_success_commit ?? null,
           last_success_version: input.last_success_version ?? null,
+          prompt: input.prompt ?? null,
           stop_requested: input.stop_requested ?? false,
         })
         .onConflictDoUpdate({
@@ -404,12 +408,27 @@ export namespace AutofixQueue {
             active_run_id: input.active_run_id,
             last_success_commit: input.last_success_commit,
             last_success_version: input.last_success_version,
+            prompt: input.prompt,
             stop_requested: input.stop_requested,
           },
         })
         .run(),
     )
     return broadcast(input.directory, input.project_id, input.profile)
+  }
+
+  export async function getPrompt(project_id: string) {
+    return AutofixPrompt.resolve((await stateRow(project_id))?.prompt ?? undefined)
+  }
+
+  export async function setPrompt(input: { directory: string; project_id: string; profile: string }, prompt: AutofixSchema.Prompt) {
+    const next = AutofixPrompt.same(prompt, AutofixPrompt.resolve()) ? null : AutofixPrompt.serialize(prompt)
+    return setState({
+      directory: input.directory,
+      project_id: input.project_id,
+      profile: input.profile,
+      prompt: next,
+    })
   }
 
   export async function syncProject(target: ResolvedTarget, opts?: { full?: boolean }) {

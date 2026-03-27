@@ -1,4 +1,4 @@
-import type { AutofixDetail, AutofixFeedback, AutofixRun, AutofixSummary } from "@opencode-ai/sdk/v2/client"
+import type { AutofixDetail, AutofixFeedback, AutofixPrompt, AutofixRun, AutofixSummary } from "@opencode-ai/sdk/v2/client"
 import { Button } from "@opencode-ai/ui/button"
 import { Collapsible } from "@opencode-ai/ui/collapsible"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -61,6 +61,13 @@ const sample = JSON.stringify(
   null,
   2,
 )
+
+const blank = {
+  analysis_system: "",
+  analysis_user: "",
+  build_system: "",
+  build_user: "",
+} satisfies AutofixPrompt
 
 function ink(status?: string) {
   if (status === "done" || status === "verified") return "text-emerald-700 dark:text-emerald-300"
@@ -139,6 +146,24 @@ function missing(err: unknown) {
   return false
 }
 
+function clone(prompt?: AutofixPrompt) {
+  return {
+    analysis_system: prompt?.analysis_system ?? "",
+    analysis_user: prompt?.analysis_user ?? "",
+    build_system: prompt?.build_system ?? "",
+    build_user: prompt?.build_user ?? "",
+  } satisfies AutofixPrompt
+}
+
+function same(a?: AutofixPrompt, b?: AutofixPrompt) {
+  return (
+    (a?.analysis_system ?? "") === (b?.analysis_system ?? "") &&
+    (a?.analysis_user ?? "") === (b?.analysis_user ?? "") &&
+    (a?.build_system ?? "") === (b?.build_system ?? "") &&
+    (a?.build_user ?? "") === (b?.build_user ?? "")
+  )
+}
+
 function Card(props: {
   title: string
   children: JSX.Element
@@ -177,6 +202,8 @@ export default function AutofixPage() {
   const [runID, setRunID] = createSignal<string>()
   const [resetID, setResetID] = createSignal<string>()
   const [infoOpen, setInfoOpen] = createSignal(true)
+  const [shared, setShared] = createSignal<AutofixPrompt>(blank)
+  const [saved, setSaved] = createSignal<AutofixPrompt>(blank)
 
   const [summary, summaryCtl] = createResource(
     async () => (await sdk.client.experimental.autofix.get()).data as AutofixSummary | undefined,
@@ -191,6 +218,7 @@ export default function AutofixPage() {
   const items = createMemo(() => feedback() ?? [])
   const live = createMemo(() => summary()?.active_run)
   const liveItem = createMemo(() => items().find((item) => item.id === live()?.feedback_id))
+  const dirty = createMemo(() => !same(shared(), saved()))
   const picked = createMemo(() => items().find((item) => item.id === feedbackID()))
   const pickedRow = createSelector(feedbackID)
   const liveRow = createSelector(() => live()?.feedback_id)
@@ -262,6 +290,16 @@ export default function AutofixPage() {
     })
     keep(top)
   }
+
+  createEffect(() => {
+    const next = clone(summary()?.state.prompt)
+    if (!same(shared(), saved())) return
+    if (same(saved(), next)) return
+    batch(() => {
+      setSaved(clone(next))
+      setShared(clone(next))
+    })
+  })
 
   createEffect(() => {
     const id = feedbackID()
@@ -343,6 +381,138 @@ export default function AutofixPage() {
 
   const startAll = () => act("start", () => sdk.client.experimental.autofix.start())
   const stop = () => act("stop", () => sdk.client.experimental.autofix.stop())
+
+  const saveShared = async (close?: boolean) => {
+    setBusy("prompt")
+    await sdk.client.experimental.autofix.prompt
+      .set({
+        autofixPromptInput: clone(shared()),
+      })
+      .then((result) => {
+        const next = clone((result.data as AutofixSummary | undefined)?.state.prompt)
+        batch(() => {
+          summaryCtl.mutate(result.data as AutofixSummary | undefined)
+          setSaved(clone(next))
+          setShared(clone(next))
+        })
+        if (close) dialog.close()
+        showToast({
+          title: "已保存通用提示词模板",
+          description: "后续新的 AutoCodingFix 提示词会直接使用你刚保存的模板。",
+        })
+      })
+      .catch((err: unknown) => {
+        showToast({
+          variant: "error",
+          title: "AutoCodingFix 请求失败",
+          description: err instanceof Error ? err.message : String(err),
+        })
+      })
+    setBusy(undefined)
+  }
+
+  function DialogPrompt() {
+    return (
+      <Dialog title="通用提示词模板" fit>
+        <div class="flex max-h-[78vh] flex-col gap-3 overflow-y-auto pl-6 pr-2.5 pb-3">
+          <div class="flex flex-wrap items-center gap-2 text-11-regular text-text-weak">
+            <span class="rounded-full bg-surface-raised-base px-2 py-1">当前回显的是正在生效的提示词模板</span>
+            <span>{dirty() ? "有未保存修改，新的执行仍会使用上一次已保存模板。" : "保存后立即生效，影响后续新的顺序执行、执行当前反馈、继续处理。"}</span>
+          </div>
+
+          <div class="grid gap-3 xl:grid-cols-2">
+            <TextField
+              label="分析阶段系统提示"
+              multiline
+              spellcheck={false}
+              value={shared().analysis_system}
+              onChange={(value) => setShared((item) => ({ ...item, analysis_system: value }))}
+              class="min-h-[180px] max-h-[320px] w-full overflow-y-auto"
+            />
+            <TextField
+              label="分析阶段用户模板"
+              multiline
+              spellcheck={false}
+              value={shared().analysis_user}
+              onChange={(value) => setShared((item) => ({ ...item, analysis_user: value }))}
+              class="min-h-[220px] max-h-[360px] w-full overflow-y-auto"
+            />
+            <TextField
+              label="修改阶段系统提示"
+              multiline
+              spellcheck={false}
+              value={shared().build_system}
+              onChange={(value) => setShared((item) => ({ ...item, build_system: value }))}
+              class="min-h-[180px] max-h-[320px] w-full overflow-y-auto"
+            />
+            <TextField
+              label="修改阶段用户模板"
+              multiline
+              spellcheck={false}
+              value={shared().build_user}
+              onChange={(value) => setShared((item) => ({ ...item, build_user: value }))}
+              class="min-h-[260px] max-h-[420px] w-full overflow-y-auto"
+            />
+          </div>
+
+          <div class="rounded-xl border border-border-weak-base bg-surface-raised-base px-3 py-2.5 text-11-regular text-text-weak">
+            <div>这里编辑的是当前真正发给模型的公共提示词模板，不是额外附加说明。</div>
+            <div class="mt-1">
+              分析阶段可用占位符：
+              <code>{"{{feedback}}"}</code>
+              、
+              <code>{"{{extra_block}}"}</code>
+              。
+            </div>
+            <div class="mt-1">
+              修改阶段可用占位符：
+              <code>{"{{feedback_id}}"}</code>
+              、
+              <code>{"{{feedback}}"}</code>
+              、
+              <code>{"{{meta_block}}"}</code>
+              、
+              <code>{"{{attempt}}"}</code>
+              、
+              <code>{"{{plan_summary}}"}</code>
+              、
+              <code>{"{{plan_scope}}"}</code>
+              、
+              <code>{"{{plan_steps}}"}</code>
+              、
+              <code>{"{{plan_acceptance}}"}</code>
+              、
+              <code>{"{{plan_architecture_block}}"}</code>
+              、
+              <code>{"{{plan_methods_block}}"}</code>
+              、
+              <code>{"{{plan_flows_block}}"}</code>
+              、
+              <code>{"{{issue_block}}"}</code>
+              、
+              <code>{"{{extra_block}}"}</code>
+              。
+            </div>
+            <div class="mt-1">当前已经发出的请求不会中途改写，保存后会用于下一次新的发送。</div>
+          </div>
+
+          <div class="flex justify-end gap-2">
+            <Show when={dirty()}>
+              <Button size="large" variant="ghost" disabled={busy() !== undefined} onClick={() => setShared(clone(saved()))}>
+                恢复已保存
+              </Button>
+            </Show>
+            <Button size="large" variant="ghost" disabled={busy() !== undefined} onClick={() => dialog.close()}>
+              关闭
+            </Button>
+            <Button size="large" variant="primary" disabled={busy() !== undefined || !dirty()} onClick={() => void saveShared(true)}>
+              保存
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    )
+  }
   const startOne = () => {
     const item = picked()
     if (!item) return Promise.resolve()
@@ -623,6 +793,9 @@ export default function AutofixPage() {
                 onClick={() => dialog.show(() => <DialogImport />)}
               >
                 导入本地反馈
+              </Button>
+              <Button size="small" variant="secondary" disabled={busy() !== undefined} onClick={() => dialog.show(() => <DialogPrompt />)}>
+                {dirty() ? "通用提示词*" : "通用提示词"}
               </Button>
               <Show
                 when={summary()?.state.status === "running" || summary()?.state.status === "stopping"}

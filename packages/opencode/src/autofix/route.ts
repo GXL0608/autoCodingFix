@@ -42,6 +42,41 @@ export const AutofixRoutes = lazy(() =>
       },
     )
     .post(
+      "/prompt",
+      describeRoute({
+        summary: "Set shared autofix prompt",
+        description: "Persist the project-scoped shared Autofix prompt used for future runs.",
+        operationId: "experimental.autofix.prompt.set",
+        responses: {
+          200: {
+            description: "Autofix summary",
+            content: {
+              "application/json": {
+                schema: resolver(AutofixSchema.summary),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator("json", AutofixSchema.prompt_input),
+      async (c) => {
+        const cfg = await AutofixConfig.resolveForDirectory(Instance.directory)
+        if (!cfg) throw new Error("Autofix is not available for the current project")
+        const body = c.req.valid("json")
+        return c.json(
+          await AutofixQueue.setPrompt(
+            {
+              directory: Instance.directory,
+              project_id: Instance.project.id,
+              profile: cfg.profile,
+            },
+            body,
+          ),
+        )
+      },
+    )
+    .post(
       "/start",
       describeRoute({
         summary: "Start autofix",

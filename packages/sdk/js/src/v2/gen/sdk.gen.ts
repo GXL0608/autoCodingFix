@@ -15,6 +15,7 @@ import type {
   AuthSetResponses,
   AutofixContinueInput,
   AutofixImportInput,
+  AutofixPromptInput,
   CommandListResponses,
   Config as Config3,
   ConfigGetResponses,
@@ -34,6 +35,8 @@ import type {
   ExperimentalAutofixImportFeedbackResponses,
   ExperimentalAutofixMuteFeedbackErrors,
   ExperimentalAutofixMuteFeedbackResponses,
+  ExperimentalAutofixPromptSetErrors,
+  ExperimentalAutofixPromptSetResponses,
   ExperimentalAutofixResetFeedbackErrors,
   ExperimentalAutofixResetFeedbackResponses,
   ExperimentalAutofixRunContinueErrors,
@@ -946,6 +949,49 @@ export class Tool extends HeyApiClient {
   }
 }
 
+export class Prompt extends HeyApiClient {
+  /**
+   * Set shared autofix prompt
+   *
+   * Persist the project-scoped shared Autofix prompt used for future runs.
+   */
+  public set<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      autofixPromptInput?: AutofixPromptInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "autofixPromptInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalAutofixPromptSetResponses,
+      ExperimentalAutofixPromptSetErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/autofix/prompt",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Run extends HeyApiClient {
   /**
    * List autofix runs
@@ -1439,6 +1485,11 @@ export class Autofix extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+
+  private _prompt?: Prompt
+  get prompt(): Prompt {
+    return (this._prompt ??= new Prompt({ client: this.client }))
   }
 
   private _run?: Run

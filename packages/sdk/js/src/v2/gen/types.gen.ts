@@ -957,6 +957,13 @@ export type EventWorktreeFailed = {
   }
 }
 
+export type AutofixPrompt = {
+  analysis_system: string
+  analysis_user: string
+  build_system: string
+  build_user: string
+}
+
 export type AutofixCounts = {
   queued: number
   running: number
@@ -979,6 +986,7 @@ export type AutofixState = {
   last_sync_at?: number
   last_success_commit?: string
   last_success_version?: string
+  prompt?: AutofixPrompt
   counts: AutofixCounts
 }
 
@@ -1817,6 +1825,13 @@ export type ToolList = Array<ToolListItem>
 export type AutofixSummary = {
   state: AutofixState
   active_run?: AutofixRun
+}
+
+export type AutofixPromptInput = {
+  analysis_system: string
+  analysis_user: string
+  build_system: string
+  build_user: string
 }
 
 export type AutofixSyncResult = {
@@ -2849,6 +2864,36 @@ export type ExperimentalAutofixGetResponses = {
 }
 
 export type ExperimentalAutofixGetResponse = ExperimentalAutofixGetResponses[keyof ExperimentalAutofixGetResponses]
+
+export type ExperimentalAutofixPromptSetData = {
+  body?: AutofixPromptInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/autofix/prompt"
+}
+
+export type ExperimentalAutofixPromptSetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalAutofixPromptSetError =
+  ExperimentalAutofixPromptSetErrors[keyof ExperimentalAutofixPromptSetErrors]
+
+export type ExperimentalAutofixPromptSetResponses = {
+  /**
+   * Autofix summary
+   */
+  200: AutofixSummary
+}
+
+export type ExperimentalAutofixPromptSetResponse =
+  ExperimentalAutofixPromptSetResponses[keyof ExperimentalAutofixPromptSetResponses]
 
 export type ExperimentalAutofixStartData = {
   body?: never

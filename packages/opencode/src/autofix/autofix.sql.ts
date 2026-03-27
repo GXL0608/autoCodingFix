@@ -18,6 +18,7 @@ export const AutofixStateTable = sqliteTable(
     active_run_id: text(),
     last_success_commit: text(),
     last_success_version: text(),
+    prompt: text(),
     stop_requested: integer({ mode: "boolean" })
       .notNull()
       .$default(() => false),

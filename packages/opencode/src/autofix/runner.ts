@@ -30,6 +30,10 @@ const jobs = new Map<string, Job>()
 const active = new Set(["analyzing", "implementing", "verifying", "committing", "packaging"])
 
 export namespace AutofixRunner {
+  async function prompt(project_id: string) {
+    return AutofixQueue.getPrompt(project_id)
+  }
+
   async function collect(cfg: ResolvedTarget, feedbackID: string) {
     const roots = [cfg.directory, Global.Path.data, Global.Path.state].map((item) => Filesystem.resolve(item))
     const files = new Set<string>()
@@ -221,7 +225,8 @@ export namespace AutofixRunner {
         message: opts?.plan ? `Continuing feedback #${feedback.external_id}` : `Analyzing feedback #${feedback.external_id}`,
       })
       const run = await ctx(cfg, runID, sessionID)
-      const plan = opts?.plan ?? (await AutofixAnalyzer.analyze(run, audio_file, opts?.extra))
+      const item = await prompt(cfg.project_id)
+      const plan = opts?.plan ?? (await AutofixAnalyzer.analyze(run, audio_file, opts?.extra, item))
       if (!plan.automatable) {
         await AutofixQueue.updateRun(runID, {
           status: "blocked",
@@ -254,7 +259,15 @@ export namespace AutofixRunner {
           status: "running",
         })
         await AutofixQueue.setStatus(feedback.id, "implementing", undefined, runID)
-        const result = await AutofixExecutor.implement(run, plan, no, audio_file, issue, opts?.extra)
+        const result = await AutofixExecutor.implement(
+          run,
+          plan,
+          no,
+          audio_file,
+          issue,
+          opts?.extra,
+          await prompt(cfg.project_id),
+        )
         await AutofixQueue.updateAttempt(attempt, {
           files: result.files,
           summary: `Touched ${result.files.length} file(s)`,
