@@ -1834,6 +1834,16 @@ export type AutofixPromptInput = {
   build_user: string
 }
 
+export type AutofixModel = {
+  providerID: string
+  modelID: string
+}
+
+export type AutofixStartInput = {
+  model?: AutofixModel
+  variant?: string
+}
+
 export type AutofixSyncResult = {
   imported: number
   updated: number
@@ -2896,7 +2906,7 @@ export type ExperimentalAutofixPromptSetResponse =
   ExperimentalAutofixPromptSetResponses[keyof ExperimentalAutofixPromptSetResponses]
 
 export type ExperimentalAutofixStartData = {
-  body?: never
+  body?: AutofixStartInput
   path?: never
   query?: {
     directory?: string
@@ -2925,7 +2935,7 @@ export type ExperimentalAutofixStartResponse =
   ExperimentalAutofixStartResponses[keyof ExperimentalAutofixStartResponses]
 
 export type ExperimentalAutofixStartFeedbackData = {
-  body?: never
+  body?: AutofixStartInput
   path: {
     feedbackID: string
   }

@@ -21,12 +21,15 @@ export namespace AutofixExecutor {
     issue?: string,
     extra?: string,
     prompt?: AutofixSchema.Prompt,
+    pick?: AutofixSchema.StartInput,
   ): Promise<AttemptResult> {
     const item = AutofixPrompt.build(ctx, plan, attempt, issue, extra, prompt)
     const msg = await SessionPrompt.prompt({
       sessionID: ctx.session_id as Parameters<typeof SessionPrompt.prompt>[0]["sessionID"],
       agent: "build",
+      model: pick?.model,
       system: item.system,
+      variant: pick?.variant,
       parts: [
         {
           type: "text",

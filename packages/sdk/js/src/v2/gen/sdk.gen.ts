@@ -16,6 +16,7 @@ import type {
   AutofixContinueInput,
   AutofixImportInput,
   AutofixPromptInput,
+  AutofixStartInput,
   CommandListResponses,
   Config as Config3,
   ConfigGetResponses,
@@ -1143,6 +1144,7 @@ export class Autofix extends HeyApiClient {
     parameters?: {
       directory?: string
       workspace?: string
+      autofixStartInput?: AutofixStartInput
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1153,6 +1155,7 @@ export class Autofix extends HeyApiClient {
           args: [
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
+            { key: "autofixStartInput", map: "body" },
           ],
         },
       ],
@@ -1165,6 +1168,11 @@ export class Autofix extends HeyApiClient {
       url: "/experimental/autofix/start",
       ...options,
       ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 
@@ -1178,6 +1186,7 @@ export class Autofix extends HeyApiClient {
       feedbackID: string
       directory?: string
       workspace?: string
+      autofixStartInput?: AutofixStartInput
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -1189,6 +1198,7 @@ export class Autofix extends HeyApiClient {
             { in: "path", key: "feedbackID" },
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
+            { key: "autofixStartInput", map: "body" },
           ],
         },
       ],
@@ -1201,6 +1211,11 @@ export class Autofix extends HeyApiClient {
       url: "/experimental/autofix/feedback/{feedbackID}/start",
       ...options,
       ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
     })
   }
 

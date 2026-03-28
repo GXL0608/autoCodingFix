@@ -200,4 +200,82 @@ describe("autofix.analysis", () => {
     expect(plan.automatable).toBe(true)
     expect(plan.summary).toContain("默认只改主界面")
   })
+
+  test("forwards explicit model selection to analysis prompts", async () => {
+    mock = spyOn(PromptModule.SessionPrompt, "prompt").mockResolvedValue({
+      info: {
+        role: "assistant",
+        structured: {
+          summary: "默认采用最小改动方案。",
+          scope: ["设置页"],
+          steps: ["刷新文案"],
+          acceptance: ["切换语言后立即刷新"],
+          architecture: [],
+          methods: [],
+          flows: [],
+          automatable: true,
+          blockers: [],
+        },
+      },
+    } as never)
+
+    const pick = AutofixSchema.start_input.parse({
+      model: {
+        providerID: "openai",
+        modelID: "gpt-5.2",
+      },
+      variant: "high",
+    })
+
+    await AutofixAnalyzer.analyze(
+      {
+        target: {
+          directory: "/tmp",
+          worktree: "/tmp",
+          project_id: "p",
+          profile: "cell",
+          remotes: [],
+          source: {
+            kind: "postgres",
+            dsn: "",
+            dsn_env: "",
+            table: "",
+            sync_batch: 1,
+          },
+          feedback: {
+            use_audio_when_text_missing: false,
+            max_audio_bytes: 1,
+          },
+          verify: {
+            kind: "electron_webview_smoke",
+            command: "",
+            startup_timeout_ms: 1,
+            healthy_window_ms: 1,
+          },
+          package: {
+            command: "",
+            artifact_glob: [],
+          },
+          version: {
+            kind: "suffix",
+            source: "root_package_json",
+            format: "",
+          },
+        },
+        run_id: "run",
+        session_id: "ses",
+        feedback_id: "fb",
+        external_id: 1,
+        recognized_text: "设置页切换语言后，文案没有立即刷新。",
+      },
+      undefined,
+      undefined,
+      undefined,
+      pick,
+    )
+
+    const req = mock.mock.calls[0]?.[0]
+    expect(req?.model).toEqual(pick.model)
+    expect(req?.variant).toBe("high")
+  })
 })

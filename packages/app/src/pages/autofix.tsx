@@ -3,11 +3,13 @@ import { Button } from "@opencode-ai/ui/button"
 import { Collapsible } from "@opencode-ai/ui/collapsible"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { Dialog } from "@opencode-ai/ui/dialog"
+import { Select } from "@opencode-ai/ui/select"
 import { TextField } from "@opencode-ai/ui/text-field"
 import { showToast } from "@opencode-ai/ui/toast"
 import { base64Encode } from "@opencode-ai/util/encode"
 import { useNavigate } from "@solidjs/router"
 import { type JSX, For, Show, batch, createEffect, createMemo, createResource, createSelector, createSignal, onCleanup } from "solid-js"
+import { useLocal } from "@/context/local"
 import { useSDK } from "@/context/sdk"
 
 const stateText: Record<string, string> = {
@@ -50,6 +52,21 @@ const levelText: Record<string, string> = {
 const artifactText: Record<string, string> = {
   package: "安装包",
 }
+
+const filters = [
+  { value: "all", label: "全部状态" },
+  { value: "queued", label: "待处理" },
+  { value: "analyzing", label: "分析中" },
+  { value: "implementing", label: "修改中" },
+  { value: "verifying", label: "验证中" },
+  { value: "committing", label: "提交中" },
+  { value: "packaging", label: "打包中" },
+  { value: "done", label: "已完成" },
+  { value: "muted", label: "已屏蔽" },
+  { value: "blocked", label: "已阻塞" },
+  { value: "failed", label: "已失败" },
+  { value: "stopped", label: "已停止" },
+] as const
 
 const sample = JSON.stringify(
   [
@@ -193,6 +210,7 @@ function Info(props: { name: string; value?: string | number | null }) {
 }
 
 export default function AutofixPage() {
+  const local = useLocal()
   const sdk = useSDK()
   const navigate = useNavigate()
   const dialog = useDialog()
@@ -201,9 +219,11 @@ export default function AutofixPage() {
   const [feedbackID, setFeedbackID] = createSignal<string>()
   const [runID, setRunID] = createSignal<string>()
   const [resetID, setResetID] = createSignal<string>()
+  const [filter, setFilter] = createSignal<(typeof filters)[number]["value"]>("all")
   const [infoOpen, setInfoOpen] = createSignal(true)
   const [shared, setShared] = createSignal<AutofixPrompt>(blank)
   const [saved, setSaved] = createSignal<AutofixPrompt>(blank)
+  let tick = 0
 
   const [summary, summaryCtl] = createResource(
     async () => (await sdk.client.experimental.autofix.get()).data as AutofixSummary | undefined,
@@ -216,6 +236,11 @@ export default function AutofixPage() {
   )
 
   const items = createMemo(() => feedback() ?? [])
+  const rows = createMemo(() => {
+    const key = filter()
+    if (key === "all") return items()
+    return items().filter((item) => view(item) === key)
+  })
   const live = createMemo(() => summary()?.active_run)
   const liveItem = createMemo(() => items().find((item) => item.id === live()?.feedback_id))
   const dirty = createMemo(() => !same(shared(), saved()))
@@ -257,11 +282,12 @@ export default function AutofixPage() {
     },
   )
 
-  const reload = () => {
-    void summaryCtl.refetch()
-    void feedbackCtl.refetch()
-    void runsCtl.refetch()
-    if (runID() && !resetID()) void detailCtl.refetch()
+  const grab = () => {
+    if (!listRef) return
+    return {
+      top: listRef.scrollTop,
+      height: listRef.scrollHeight,
+    }
   }
 
   const last = (item?: AutofixFeedback) => {
@@ -273,22 +299,35 @@ export default function AutofixPage() {
     return (runs() ?? []).find((row) => row.feedback_id === item.id && row.id === item.last_run_id)?.id
   }
 
-  const keep = (top?: number) => {
-    if (top === undefined) return
+  const keep = (snap?: { top: number; height: number }, id = tick) => {
+    if (!snap) return
     requestAnimationFrame(() => {
-      if (!listRef) return
-      listRef.scrollTop = top
+      requestAnimationFrame(() => {
+        if (!listRef || id !== tick) return
+        listRef.scrollTop = Math.max(0, snap.top + listRef.scrollHeight - snap.height)
+      })
     })
   }
 
+  const reload = async (snap = grab()) => {
+    const id = ++tick
+    await Promise.all([
+      summaryCtl.refetch(),
+      feedbackCtl.refetch(),
+      runsCtl.refetch(),
+      runID() && !resetID() ? detailCtl.refetch() : Promise.resolve(),
+    ])
+    keep(snap, id)
+  }
+
   const pickOne = (item: AutofixFeedback) => {
-    const top = listRef?.scrollTop
+    const snap = grab()
     batch(() => {
       setFeedbackID(item.id)
       setRunID(last(item))
       detailCtl.mutate(undefined)
     })
-    keep(top)
+    keep(snap)
   }
 
   createEffect(() => {
@@ -303,12 +342,17 @@ export default function AutofixPage() {
 
   createEffect(() => {
     const id = feedbackID()
-    if (id && items().some((item) => item.id === id)) return
-    if (liveItem()?.id) {
-      setFeedbackID(liveItem()?.id)
+    if (id && rows().some((item) => item.id === id)) return
+    const liveID = liveItem()?.id
+    if (liveID && rows().some((item) => item.id === liveID)) {
+      setFeedbackID(liveID)
       return
     }
-    if (items()[0]?.id) setFeedbackID(items()[0]?.id)
+    if (rows()[0]?.id) {
+      setFeedbackID(rows()[0].id)
+      return
+    }
+    setFeedbackID(undefined)
   })
 
   createEffect(() => {
@@ -340,12 +384,12 @@ export default function AutofixPage() {
   })
 
   createEffect(() => {
-    const off1 = sdk.event.on("autofix.queue.updated", reload)
-    const off2 = sdk.event.on("autofix.run.updated", reload)
+    const off1 = sdk.event.on("autofix.queue.updated", () => void reload())
+    const off2 = sdk.event.on("autofix.run.updated", () => void reload())
     const off3 = sdk.event.on("autofix.run.log", () => {
       if (runID() && !resetID()) void detailCtl.refetch()
     })
-    const off4 = sdk.event.on("autofix.artifact.ready", reload)
+    const off4 = sdk.event.on("autofix.artifact.ready", () => void reload())
     onCleanup(() => {
       off1()
       off2()
@@ -354,10 +398,10 @@ export default function AutofixPage() {
     })
   })
 
-  const act = async (name: string, fn: () => Promise<unknown>) => {
+  const act = async (name: string, fn: () => Promise<unknown>, snap = grab()) => {
     setBusy(name)
     await fn()
-      .then(() => reload())
+      .then(() => reload(snap))
       .catch((err: unknown) => {
         showToast({
           variant: "error",
@@ -379,7 +423,29 @@ export default function AutofixPage() {
       })
     })
 
-  const startAll = () => act("start", () => sdk.client.experimental.autofix.start())
+  const pickModel = () => {
+    const item = local.model.current()
+    if (!item) return
+    return {
+      model: {
+        providerID: item.provider.id,
+        modelID: item.id,
+      },
+      variant: local.model.variant.current() ?? undefined,
+    }
+  }
+
+  const openSession = (session: string) => {
+    local.session.promote(sdk.directory, session)
+    navigate(`/${base64Encode(sdk.directory)}/session/${session}`)
+  }
+
+  const startAll = () =>
+    act("start", () =>
+      sdk.client.experimental.autofix.start({
+        autofixStartInput: pickModel(),
+      }),
+    )
   const stop = () => act("stop", () => sdk.client.experimental.autofix.stop())
 
   const saveShared = async (close?: boolean) => {
@@ -524,12 +590,18 @@ export default function AutofixPage() {
       })
       return Promise.resolve()
     }
-    return act("one", () => sdk.client.experimental.autofix.startFeedback({ feedbackID: item.id }))
+    return act("one", () =>
+      sdk.client.experimental.autofix.startFeedback({
+        feedbackID: item.id,
+        autofixStartInput: pickModel(),
+      }),
+    )
   }
   const resetOne = () => {
     const item = picked()
     if (!item) return Promise.resolve()
     const prev = runID()
+    const snap = grab()
     setBusy("reset")
     setResetID(item.id)
     setRunID(undefined)
@@ -539,7 +611,7 @@ export default function AutofixPage() {
     return sdk.client.experimental.autofix
       .resetFeedback({ feedbackID: item.id })
       .then(async () => {
-        await Promise.all([summaryCtl.refetch(), feedbackCtl.refetch(), runsCtl.refetch()])
+        await reload(snap)
         showToast({
           title: "已清除当前反馈记录",
           description: `反馈 #${item.external_id} 的执行记录和状态已重置。`,
@@ -580,6 +652,7 @@ export default function AutofixPage() {
     })
 
   const deleteOne = (item: AutofixFeedback) => {
+    const snap = grab()
     if (feedbackID() === item.id) {
       setFeedbackID(undefined)
       setRunID(undefined)
@@ -591,7 +664,7 @@ export default function AutofixPage() {
         title: "已删除反馈",
         description: `反馈 #${item.external_id} 及其本地执行记录已移除。`,
       })
-    })
+    }, snap)
   }
 
   function DialogImport() {
@@ -623,9 +696,9 @@ export default function AutofixPage() {
       setBusy("import")
       await sdk.client.experimental.autofix
         .importFeedback({ autofixImportInput: data })
-        .then((result) => {
+        .then(async (result) => {
           dialog.close()
-          reload()
+          await reload()
           showToast({
             title: "导入完成",
             description: `新增 ${result.data?.imported ?? 0} 条，更新 ${result.data?.updated ?? 0} 条，阻塞 ${result.data?.blocked ?? 0} 条。`,
@@ -724,13 +797,14 @@ export default function AutofixPage() {
           },
         })
         .then(async (result) => {
+          const snap = grab()
           const next = result.data
           dialog.close()
           if (next?.id) {
             setRunID(next.id)
             detailCtl.mutate(undefined)
           }
-          await Promise.all([summaryCtl.refetch(), feedbackCtl.refetch(), runsCtl.refetch()])
+          await reload(snap)
           showToast({
             title: "已继续当前记录",
             description: prompt().trim() ? "已追加提示词并开始新的自动修复。" : "已基于当前记录开始新的自动修复。",
@@ -887,12 +961,36 @@ export default function AutofixPage() {
         </Card>
 
         <div class="min-h-0 flex-1 grid grid-cols-[300px_minmax(0,1fr)] gap-3 max-xl:grid-cols-1">
-          <Card title="反馈列表" class="h-full" body="p-2 min-h-0 flex flex-col" action={<div class="text-11-regular text-text-weak">{items().length} 条</div>}>
+          <Card
+            title="反馈列表"
+            class="h-full"
+            body="p-2 min-h-0 flex flex-col"
+            action={
+              <div class="flex items-center gap-2">
+                <Select
+                  options={[...filters]}
+                  current={filters.find((item) => item.value === filter())}
+                  value={(item) => item.value}
+                  label={(item) => item.label}
+                  onSelect={(item) => setFilter(item?.value ?? "all")}
+                  variant="ghost"
+                  size="small"
+                  class="min-w-[120px]"
+                  valueClass="text-11-regular text-text-base"
+                />
+                <div class="text-11-regular text-text-weak">
+                  {rows().length}
+                  <Show when={rows().length !== items().length}> / {items().length}</Show>
+                  条
+                </div>
+              </div>
+            }
+          >
             <div
               ref={listRef}
               class="min-h-0 overflow-y-auto pr-1 flex flex-col gap-2"
             >
-              <For each={items()}>
+              <For each={rows()}>
                 {(item) => {
                   const sel = () => pickedRow(item.id)
                   const run = () => liveRow(item.id)
@@ -983,9 +1081,9 @@ export default function AutofixPage() {
                 }}
               </For>
 
-              <Show when={items().length === 0}>
+              <Show when={rows().length === 0}>
                 <div class="rounded-xl border border-dashed border-border-weak-base px-4 py-6 text-12-regular text-text-weak">
-                  暂无反馈，点击上方“同步全部反馈”或“导入本地反馈”后这里会展示完整列表。
+                  {items().length === 0 ? "暂无反馈，点击上方“同步全部反馈”或“导入本地反馈”后这里会展示完整列表。" : "当前筛选条件下暂无反馈，试试切换为“全部状态”。"}
                 </div>
               </Show>
             </div>
@@ -1156,7 +1254,7 @@ export default function AutofixPage() {
                               <Button
                                 size="small"
                                 variant="secondary"
-                                onClick={() => navigate(`/${base64Encode(sdk.directory)}/session/${info().run.session_id}`)}
+                                onClick={() => openSession(info().run.session_id!)}
                               >
                                 打开会话
                               </Button>

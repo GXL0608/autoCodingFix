@@ -14,17 +14,25 @@ export namespace AutofixAnalyzer {
     return schema
   }
 
-  async function run(ctx: RunCtx, audio?: TempAudio, extra?: string, prompt?: AutofixSchema.Prompt) {
+  async function run(
+    ctx: RunCtx,
+    audio?: TempAudio,
+    extra?: string,
+    prompt?: AutofixSchema.Prompt,
+    pick?: AutofixSchema.StartInput,
+  ) {
     const item = AutofixPrompt.analyze(ctx, extra, prompt)
     const msg = await SessionPrompt.prompt({
       sessionID: ctx.session_id as Parameters<typeof SessionPrompt.prompt>[0]["sessionID"],
       agent: "plan",
+      model: pick?.model,
       system: item.system,
       format: {
         type: "json_schema",
         schema: schema(),
         retryCount: 2,
       },
+      variant: pick?.variant,
       parts: [
         {
           type: "text",
@@ -59,9 +67,15 @@ export namespace AutofixAnalyzer {
       .join("\n\n")
   }
 
-  export async function analyze(ctx: RunCtx, audio?: TempAudio, extra?: string, prompt?: AutofixSchema.Prompt) {
-    const plan = await run(ctx, audio, extra, prompt)
+  export async function analyze(
+    ctx: RunCtx,
+    audio?: TempAudio,
+    extra?: string,
+    prompt?: AutofixSchema.Prompt,
+    pick?: AutofixSchema.StartInput,
+  ) {
+    const plan = await run(ctx, audio, extra, prompt, pick)
     if (plan.automatable || !plan.blockers?.length) return plan
-    return run(ctx, audio, retry(plan, extra), prompt)
+    return run(ctx, audio, retry(plan, extra), prompt, pick)
   }
 }

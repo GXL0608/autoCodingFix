@@ -193,6 +193,7 @@ export namespace AutofixRunner {
       extra?: string
       plan?: AutofixSchema.Plan
       issue?: string
+      pick?: AutofixSchema.StartInput
     },
   ) {
     const detail = await AutofixQueue.detail(runID)
@@ -226,7 +227,7 @@ export namespace AutofixRunner {
       })
       const run = await ctx(cfg, runID, sessionID)
       const item = await prompt(cfg.project_id)
-      const plan = opts?.plan ?? (await AutofixAnalyzer.analyze(run, audio_file, opts?.extra, item))
+      const plan = opts?.plan ?? (await AutofixAnalyzer.analyze(run, audio_file, opts?.extra, item, opts?.pick))
       if (!plan.automatable) {
         await AutofixQueue.updateRun(runID, {
           status: "blocked",
@@ -267,6 +268,7 @@ export namespace AutofixRunner {
           issue,
           opts?.extra,
           await prompt(cfg.project_id),
+          opts?.pick,
         )
         await AutofixQueue.updateAttempt(attempt, {
           files: result.files,
@@ -352,7 +354,7 @@ export namespace AutofixRunner {
     }
   }
 
-  async function loop(cfg: ResolvedTarget, abort: AbortController) {
+  async function loop(cfg: ResolvedTarget, abort: AbortController, pick?: AutofixSchema.StartInput) {
     await preflight(cfg)
     await AutofixQueue.setState({
       directory: cfg.directory,
@@ -373,7 +375,7 @@ export namespace AutofixRunner {
         status: "running",
         active_run_id: run.id,
       })
-      await runOne(cfg, run.id, abort.signal)
+      await runOne(cfg, run.id, abort.signal, { pick })
       await AutofixQueue.setState({
         directory: cfg.directory,
         project_id: cfg.project_id,
@@ -392,7 +394,7 @@ export namespace AutofixRunner {
     })
   }
 
-  async function one(cfg: ResolvedTarget, feedbackID: string, abort: AbortController) {
+  async function one(cfg: ResolvedTarget, feedbackID: string, abort: AbortController, pick?: AutofixSchema.StartInput) {
     await preflight(cfg)
     const feedback = await AutofixQueue.getFeedback(feedbackID)
     if (!feedback) throw new Error("Autofix feedback not found")
@@ -408,7 +410,7 @@ export namespace AutofixRunner {
       stop_requested: false,
       note: undefined,
     })
-    await runOne(cfg, run.id, abort.signal)
+    await runOne(cfg, run.id, abort.signal, { pick })
     await AutofixQueue.setState({
       directory: cfg.directory,
       project_id: cfg.project_id,
@@ -448,16 +450,16 @@ export namespace AutofixRunner {
     jobs.set(cfg.project_id, { abort, promise })
   }
 
-  export async function start(projectDir: string) {
+  export async function start(projectDir: string, pick?: AutofixSchema.StartInput) {
     const cfg = await target(projectDir)
     await AutofixQueue.repair(cfg)
-    await launch(cfg, (abort) => loop(cfg, abort))
+    await launch(cfg, (abort) => loop(cfg, abort, pick))
   }
 
-  export async function startFeedback(projectDir: string, feedbackID: string) {
+  export async function startFeedback(projectDir: string, feedbackID: string, pick?: AutofixSchema.StartInput) {
     const cfg = await target(projectDir)
     await AutofixQueue.repair(cfg)
-    await launch(cfg, (abort) => one(cfg, feedbackID, abort), true)
+    await launch(cfg, (abort) => one(cfg, feedbackID, abort, pick), true)
   }
 
   export async function resetFeedback(projectDir: string, feedbackID: string) {

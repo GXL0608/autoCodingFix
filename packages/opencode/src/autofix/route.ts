@@ -94,10 +94,12 @@ export const AutofixRoutes = lazy(() =>
           ...errors(400),
         },
       }),
+      validator("json", AutofixSchema.start_input.optional()),
       async (c) => {
         const cfg = await AutofixConfig.resolveForDirectory(Instance.directory)
         if (!cfg) throw new Error("Autofix is not available for the current project")
-        await AutofixRunner.start(Instance.directory)
+        const body = c.req.valid("json")
+        await AutofixRunner.start(Instance.directory, body)
         const result = await AutofixQueue.summary({
           directory: Instance.directory,
           project_id: Instance.project.id,
@@ -132,11 +134,13 @@ export const AutofixRoutes = lazy(() =>
           feedbackID: z.string(),
         }),
       ),
+      validator("json", AutofixSchema.start_input.optional()),
       async (c) => {
         const cfg = await AutofixConfig.resolveForDirectory(Instance.directory)
         if (!cfg) throw new Error("Autofix is not available for the current project")
         const { feedbackID } = c.req.valid("param")
-        await AutofixRunner.startFeedback(Instance.directory, feedbackID)
+        const body = c.req.valid("json")
+        await AutofixRunner.startFeedback(Instance.directory, feedbackID, body)
         const result = await AutofixQueue.summary({
           directory: Instance.directory,
           project_id: Instance.project.id,

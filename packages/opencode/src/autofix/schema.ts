@@ -1,4 +1,5 @@
 import z from "zod"
+import { ModelID, ProviderID } from "@/provider/schema"
 
 export namespace AutofixSchema {
   function time(input: number | string, ctx: z.RefinementCtx) {
@@ -106,6 +107,26 @@ export namespace AutofixSchema {
 
   export const prompt_partial = prompt.partial()
   export type PromptPartial = z.infer<typeof prompt_partial>
+
+  export const model = z
+    .object({
+      providerID: ProviderID.zod,
+      modelID: ModelID.zod,
+    })
+    .meta({
+      ref: "AutofixModel",
+    })
+  export type Model = z.infer<typeof model>
+
+  export const start_input = z
+    .object({
+      model: model.optional(),
+      variant: z.string().optional(),
+    })
+    .meta({
+      ref: "AutofixStartInput",
+    })
+  export type StartInput = z.infer<typeof start_input>
 
   export const counts = z
     .object({
