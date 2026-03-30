@@ -134,16 +134,99 @@ describe("autofix.runner", () => {
       directory: tmp.path,
       fn: async () => {
         await AutofixQueue.importFeedback(next, [item(1)])
-        const row = (await AutofixQueue.listFeedback(project.id))[0]
+        const row = (await AutofixQueue.listFeedback(project.id, tmp.path))[0]
         if (!row) throw new Error("expected imported feedback")
 
         await AutofixRunner.startFeedback(tmp.path, row.id, pick)
         await wait(async () => {
-          const runs = await AutofixQueue.listRuns(project.id)
+          const runs = await AutofixQueue.listRuns(project.id, tmp.path)
           return runs.some((item) => ["blocked", "failed", "done", "stopped"].includes(item.status))
         })
 
         expect(seen).toEqual(pick)
+      },
+    })
+  })
+
+  test("rejects feedback and runs from another project", async () => {
+    await using one = await tmpdir({ git: true })
+    await using two = await tmpdir({ git: true })
+
+    const { project } = await Project.fromDirectory(one.path)
+    const left = target(project.id, one.path)
+    const right = target(project.id, two.path)
+
+    cfg = spyOn(AutofixConfig, "resolveForDirectory").mockImplementation(async (dir) => {
+      if (dir === one.path) return left
+      if (dir === two.path) return right
+      return null
+    })
+
+    await AutofixQueue.importFeedback(right, [item(9)])
+    const row = (await AutofixQueue.listFeedback(project.id, two.path))[0]
+    if (!row) throw new Error("expected imported feedback")
+
+    const run = await AutofixQueue.createRun({
+      project_id: project.id,
+      directory: two.path,
+      feedback_id: row.id,
+      status: "failed",
+    })
+
+    await Instance.provide({
+      directory: one.path,
+      fn: async () => {
+        await expect(AutofixRunner.startFeedback(one.path, row.id)).rejects.toThrow("Autofix feedback not found")
+        await expect(AutofixRunner.continueRun(one.path, run.id)).rejects.toThrow("Autofix run not found")
+      },
+    })
+
+    expect(await AutofixQueue.listRuns(project.id, one.path)).toHaveLength(0)
+    expect(await AutofixQueue.listRuns(project.id, two.path)).toHaveLength(1)
+  })
+
+  test("fails fast when queue start hits a dirty repository", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "package.json"),
+          JSON.stringify({
+            version: "1.0.0",
+            scripts: {
+              "desktop:webview": "echo ok",
+            },
+          }),
+        )
+        await Bun.write(path.join(dir, "build-mac-arm64-dmg.sh"), "#!/bin/sh\nexit 0\n")
+        await $`git add package.json build-mac-arm64-dmg.sh`.cwd(dir).quiet()
+        await $`git commit -m "fixture"`.cwd(dir).quiet()
+        await Bun.write(path.join(dir, "dirty.txt"), "pending\n")
+      },
+    })
+
+    const { project } = await Project.fromDirectory(tmp.path)
+    const next = target(project.id, tmp.path)
+
+    cfg = spyOn(AutofixConfig, "resolveForDirectory").mockResolvedValue(next)
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await AutofixQueue.importFeedback(next, [item(1)])
+
+        await expect(AutofixRunner.start(tmp.path)).rejects.toThrow("uncommitted changes")
+
+        const sum = await AutofixQueue.summary({
+          directory: tmp.path,
+          project_id: project.id,
+          profile: next.profile,
+          supported: true,
+        })
+
+        expect(sum.state.status).toBe("blocked")
+        expect(sum.state.note).toContain("uncommitted changes")
+        expect(await AutofixQueue.listRuns(project.id, tmp.path)).toHaveLength(0)
       },
     })
   })

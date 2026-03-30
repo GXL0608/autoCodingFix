@@ -168,6 +168,7 @@ export namespace AutofixSchema {
     .object({
       id: z.string(),
       project_id: z.string(),
+      directory: z.string(),
       external_id: z.number().int(),
       created_at: z.number(),
       request_id: z.string().optional(),
@@ -205,6 +206,7 @@ export namespace AutofixSchema {
     .object({
       id: z.string(),
       project_id: z.string(),
+      directory: z.string(),
       feedback_id: z.string(),
       session_id: z.string().optional(),
       branch: z.string().optional(),
@@ -271,6 +273,7 @@ export namespace AutofixSchema {
     .object({
       id: z.string(),
       project_id: z.string(),
+      directory: z.string(),
       run_id: z.string().optional(),
       feedback_id: z.string().optional(),
       phase: z.string(),

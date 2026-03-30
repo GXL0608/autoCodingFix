@@ -1,4 +1,4 @@
-import { integer, text, sqliteTable, index, real } from "drizzle-orm/sqlite-core"
+import { integer, text, sqliteTable, index, real, primaryKey } from "drizzle-orm/sqlite-core"
 import { ProjectTable } from "../project/project.sql"
 import { Timestamps } from "../storage/schema.sql"
 import type { AutofixSchema } from "./schema"
@@ -7,8 +7,9 @@ export const AutofixStateTable = sqliteTable(
   "autofix_state",
   {
     project_id: text()
-      .primaryKey()
+      .notNull()
       .references(() => ProjectTable.id, { onDelete: "cascade" }),
+    directory: text().notNull(),
     profile: text(),
     status: text().notNull().$type<AutofixSchema.StateStatus>(),
     note: text(),
@@ -24,7 +25,7 @@ export const AutofixStateTable = sqliteTable(
       .$default(() => false),
     ...Timestamps,
   },
-  (table) => [index("autofix_state_status_idx").on(table.status)],
+  (table) => [primaryKey({ columns: [table.project_id, table.directory] }), index("autofix_state_status_idx").on(table.status)],
 )
 
 export const AutofixFeedbackTable = sqliteTable(
@@ -34,6 +35,7 @@ export const AutofixFeedbackTable = sqliteTable(
     project_id: text()
       .notNull()
       .references(() => ProjectTable.id, { onDelete: "cascade" }),
+    directory: text().notNull(),
     external_id: integer().notNull(),
     created_at: integer().notNull(),
     request_id: text(),
@@ -68,8 +70,8 @@ export const AutofixFeedbackTable = sqliteTable(
     ...Timestamps,
   },
   (table) => [
-    index("autofix_feedback_project_external_idx").on(table.project_id, table.external_id),
-    index("autofix_feedback_project_status_created_idx").on(table.project_id, table.status, table.created_at, table.id),
+    index("autofix_feedback_project_external_idx").on(table.project_id, table.directory, table.external_id),
+    index("autofix_feedback_project_status_created_idx").on(table.project_id, table.directory, table.status, table.created_at, table.id),
   ],
 )
 
@@ -80,6 +82,7 @@ export const AutofixRunTable = sqliteTable(
     project_id: text()
       .notNull()
       .references(() => ProjectTable.id, { onDelete: "cascade" }),
+    directory: text().notNull(),
     feedback_id: text()
       .notNull()
       .references(() => AutofixFeedbackTable.id, { onDelete: "cascade" }),
@@ -101,7 +104,7 @@ export const AutofixRunTable = sqliteTable(
     ...Timestamps,
   },
   (table) => [
-    index("autofix_run_project_created_idx").on(table.project_id, table.time_created),
+    index("autofix_run_project_created_idx").on(table.project_id, table.directory, table.time_created),
     index("autofix_run_feedback_idx").on(table.feedback_id, table.time_created),
   ],
 )
@@ -151,6 +154,7 @@ export const AutofixEventTable = sqliteTable(
     project_id: text()
       .notNull()
       .references(() => ProjectTable.id, { onDelete: "cascade" }),
+    directory: text().notNull(),
     run_id: text().references(() => AutofixRunTable.id, { onDelete: "cascade" }),
     feedback_id: text().references(() => AutofixFeedbackTable.id, { onDelete: "cascade" }),
     phase: text().notNull(),
@@ -162,7 +166,7 @@ export const AutofixEventTable = sqliteTable(
       .$default(() => Date.now()),
   },
   (table) => [
-    index("autofix_event_project_time_idx").on(table.project_id, table.time_created),
+    index("autofix_event_project_time_idx").on(table.project_id, table.directory, table.time_created),
     index("autofix_event_run_time_idx").on(table.run_id, table.time_created),
   ],
 )

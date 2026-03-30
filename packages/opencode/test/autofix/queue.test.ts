@@ -91,7 +91,7 @@ describe("autofix.queue.importFeedback", () => {
       cursor_external_id: 2,
     })
 
-    const rows = await AutofixQueue.listFeedback(project.id)
+    const rows = await AutofixQueue.listFeedback(project.id, tmp.path)
     expect(rows.find((row) => row.external_id === 1)?.status).toBe("queued")
     expect(rows.find((row) => row.external_id === 2)?.status).toBe("blocked")
     expect(rows.find((row) => row.external_id === 2)?.note).toBe("recognized_text is empty and audio fallback is disabled")
@@ -110,7 +110,7 @@ describe("autofix.queue.importFeedback", () => {
       }),
     ])
 
-    const prev = (await AutofixQueue.listFeedback(project.id)).find((row) => row.external_id === 7)
+    const prev = (await AutofixQueue.listFeedback(project.id, tmp.path)).find((row) => row.external_id === 7)
     expect(prev).toBeDefined()
     await AutofixQueue.setStatus(prev!.id, "done", "已完成", "run-7")
     await AutofixQueue.setState({
@@ -140,7 +140,7 @@ describe("autofix.queue.importFeedback", () => {
       cursor_external_id: 7,
     })
 
-    const next = (await AutofixQueue.listFeedback(project.id)).find((row) => row.external_id === 7)
+    const next = (await AutofixQueue.listFeedback(project.id, tmp.path)).find((row) => row.external_id === 7)
     expect(next?.status).toBe("done")
     expect(next?.last_run_id).toBe("run-7")
     expect(next?.recognized_text).toBe("更新后的反馈文本")
@@ -225,16 +225,16 @@ describe("autofix.queue.importFeedback", () => {
       }),
     ])
 
-    const row = (await AutofixQueue.listFeedback(project.id)).find((item) => item.external_id === 11)
+    const row = (await AutofixQueue.listFeedback(project.id, tmp.path)).find((item) => item.external_id === 11)
     expect(row).toBeDefined()
 
     await AutofixQueue.setMuted(target, row!.id, true)
 
-    const next = (await AutofixQueue.listFeedback(project.id)).find((item) => item.external_id === 11)
+    const next = (await AutofixQueue.listFeedback(project.id, tmp.path)).find((item) => item.external_id === 11)
     expect(next?.status).toBe("queued")
     expect(next?.muted).toBe(true)
 
-    const queued = await AutofixQueue.next(project.id)
+    const queued = await AutofixQueue.next(project.id, tmp.path)
     expect(queued?.external_id).toBe(12)
 
     const summary = await AutofixQueue.summary({
@@ -260,11 +260,12 @@ describe("autofix.queue.importFeedback", () => {
       }),
     ])
 
-    const row = (await AutofixQueue.listFeedback(project.id)).find((item) => item.external_id === 21)
+    const row = (await AutofixQueue.listFeedback(project.id, tmp.path)).find((item) => item.external_id === 21)
     expect(row).toBeDefined()
 
     const run = await AutofixQueue.createRun({
       project_id: project.id,
+      directory: tmp.path,
       feedback_id: row!.id,
       status: "failed",
     })
@@ -272,7 +273,60 @@ describe("autofix.queue.importFeedback", () => {
 
     await AutofixQueue.remove(target, row!.id)
 
-    expect(await AutofixQueue.listFeedback(project.id)).toHaveLength(0)
-    expect(await AutofixQueue.listRuns(project.id)).toHaveLength(0)
+    expect(await AutofixQueue.listFeedback(project.id, tmp.path)).toHaveLength(0)
+    expect(await AutofixQueue.listRuns(project.id, tmp.path)).toHaveLength(0)
+  })
+
+  test("keeps single feedback operations inside the current directory scope", async () => {
+    await using one = await tmpdir({ git: true })
+    await using two = await tmpdir({ git: true })
+    const { project } = await Project.fromDirectory(one.path)
+    const left = cfg(project.id, one.path)
+    const right = cfg(project.id, two.path)
+
+    await AutofixQueue.importFeedback(right, [
+      item({
+        id: 31,
+        at: 100,
+        text: "屏蔽隔离测试",
+      }),
+      item({
+        id: 32,
+        at: 200,
+        text: "重置隔离测试",
+      }),
+      item({
+        id: 33,
+        at: 300,
+        text: "删除隔离测试",
+      }),
+    ])
+
+    const mute = (await AutofixQueue.listFeedback(project.id, two.path)).find((item) => item.external_id === 31)
+    const reset = (await AutofixQueue.listFeedback(project.id, two.path)).find((item) => item.external_id === 32)
+    const drop = (await AutofixQueue.listFeedback(project.id, two.path)).find((item) => item.external_id === 33)
+    if (!mute || !reset || !drop) throw new Error("expected imported feedback")
+
+    const run = await AutofixQueue.createRun({
+      project_id: project.id,
+      directory: two.path,
+      feedback_id: drop.id,
+      status: "failed",
+    })
+
+    expect(await AutofixQueue.listFeedback(project.id, one.path)).toHaveLength(0)
+    expect(await AutofixQueue.getFeedbackByScope(project.id, one.path, mute.id)).toBeUndefined()
+    expect(await AutofixQueue.getRunByScope(project.id, one.path, run.id)).toBeUndefined()
+    expect(await AutofixQueue.detailByScope(project.id, one.path, run.id)).toBeUndefined()
+
+    await expect(AutofixQueue.setMuted(left, mute.id, true)).rejects.toThrow("Autofix feedback not found")
+    await expect(AutofixQueue.reset(left, reset.id)).rejects.toThrow("Autofix feedback not found")
+    await expect(AutofixQueue.remove(left, drop.id)).rejects.toThrow("Autofix feedback not found")
+
+    const rows = await AutofixQueue.listFeedback(project.id, two.path)
+    expect(rows.find((item) => item.external_id === 31)?.muted).toBe(false)
+    expect(rows.find((item) => item.external_id === 32)).toBeDefined()
+    expect(rows.find((item) => item.external_id === 33)).toBeDefined()
+    expect(await AutofixQueue.listRuns(project.id, two.path)).toHaveLength(1)
   })
 })

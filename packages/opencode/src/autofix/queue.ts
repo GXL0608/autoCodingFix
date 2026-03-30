@@ -54,6 +54,7 @@ export namespace AutofixQueue {
     return {
       id: row.id,
       project_id: row.project_id,
+      directory: row.directory,
       external_id: row.external_id,
       created_at: row.created_at,
       request_id: row.request_id ?? undefined,
@@ -91,6 +92,7 @@ export namespace AutofixQueue {
     return {
       id: row.id,
       project_id: row.project_id,
+      directory: row.directory,
       feedback_id: row.feedback_id,
       session_id: row.session_id ?? undefined,
       branch: row.branch ?? undefined,
@@ -148,6 +150,7 @@ export namespace AutofixQueue {
     return {
       id: row.id,
       project_id: row.project_id,
+      directory: row.directory,
       run_id: row.run_id ?? undefined,
       feedback_id: row.feedback_id ?? undefined,
       phase: row.phase,
@@ -158,16 +161,54 @@ export namespace AutofixQueue {
     } satisfies AutofixSchema.Event
   }
 
-  async function stateRow(project_id: string) {
-    return Database.use((db) => db.select().from(AutofixStateTable).where(eq(AutofixStateTable.project_id, project_id)).get())
-  }
-
-  async function feedbackRows(project_id: string) {
+  function feedbackRow(id: string, project_id?: string, directory?: string) {
     return Database.use((db) =>
       db
         .select()
         .from(AutofixFeedbackTable)
-        .where(eq(AutofixFeedbackTable.project_id, project_id))
+        .where(
+          project_id && directory
+            ? and(
+                eq(AutofixFeedbackTable.id, id),
+                eq(AutofixFeedbackTable.project_id, project_id),
+                eq(AutofixFeedbackTable.directory, directory),
+              )
+            : eq(AutofixFeedbackTable.id, id),
+        )
+        .get(),
+    )
+  }
+
+  function runRow(id: string, project_id?: string, directory?: string) {
+    return Database.use((db) =>
+      db
+        .select()
+        .from(AutofixRunTable)
+        .where(
+          project_id && directory
+            ? and(eq(AutofixRunTable.id, id), eq(AutofixRunTable.project_id, project_id), eq(AutofixRunTable.directory, directory))
+            : eq(AutofixRunTable.id, id),
+        )
+        .get(),
+    )
+  }
+
+  async function stateRow(project_id: string, directory: string) {
+    return Database.use((db) =>
+      db
+        .select()
+        .from(AutofixStateTable)
+        .where(and(eq(AutofixStateTable.project_id, project_id), eq(AutofixStateTable.directory, directory)))
+        .get(),
+    )
+  }
+
+  async function feedbackRows(project_id: string, directory: string) {
+    return Database.use((db) =>
+      db
+        .select()
+        .from(AutofixFeedbackTable)
+        .where(and(eq(AutofixFeedbackTable.project_id, project_id), eq(AutofixFeedbackTable.directory, directory)))
         .orderBy(desc(AutofixFeedbackTable.created_at), desc(AutofixFeedbackTable.external_id))
         .all(),
     )
@@ -196,17 +237,18 @@ export namespace AutofixQueue {
     return note(item, cfg) ? "blocked" : "queued"
   }
 
-  function seed(input: { project_id: string; profile: string }) {
+  function seed(input: { project_id: string; directory: string; profile: string }) {
     Database.use((db) =>
       db
         .insert(AutofixStateTable)
         .values({
           project_id: input.project_id,
+          directory: input.directory,
           profile: input.profile,
           status: "idle",
         })
         .onConflictDoUpdate({
-          target: AutofixStateTable.project_id,
+          target: [AutofixStateTable.project_id, AutofixStateTable.directory],
           set: {
             profile: input.profile,
           },
@@ -232,6 +274,7 @@ export namespace AutofixQueue {
           .where(
             and(
               eq(AutofixFeedbackTable.project_id, target.project_id),
+              eq(AutofixFeedbackTable.directory, target.directory),
               eq(AutofixFeedbackTable.external_id, item.external_id),
             ),
           )
@@ -245,6 +288,7 @@ export namespace AutofixQueue {
           .values({
             id: prev?.id ?? ulid(),
             project_id: target.project_id,
+            directory: target.directory,
             external_id: item.external_id,
             created_at: item.created_at,
             request_id: item.request_id ?? null,
@@ -317,14 +361,14 @@ export namespace AutofixQueue {
   }
 
   async function snapshot(directory: string, project_id: string, profile?: string, supported = true) {
-    const base = await stateRow(project_id)
+    const base = await stateRow(project_id, directory)
     const next = state(base, {
       directory,
       project_id,
       supported,
       profile,
     })
-    const rows = await feedbackRows(project_id)
+    const rows = await feedbackRows(project_id, directory)
     for (const item of rows) {
       if (item.muted) {
         next.counts.muted += 1
@@ -350,7 +394,7 @@ export namespace AutofixQueue {
 
   export async function summary(input: { directory: string; project_id: string; profile?: string; supported: boolean }) {
     const state = await snapshot(input.directory, input.project_id, input.profile, input.supported)
-    const active = state.active_run_id ? await getRun(state.active_run_id) : undefined
+    const active = state.active_run_id ? await getRunByScope(input.project_id, input.directory, state.active_run_id) : undefined
     return {
       state,
       active_run: active ?? undefined,
@@ -384,6 +428,7 @@ export namespace AutofixQueue {
         .insert(AutofixStateTable)
         .values({
           project_id: input.project_id,
+          directory: input.directory,
           profile: input.profile,
           status: input.status ?? "idle",
           note: input.note ?? null,
@@ -397,7 +442,7 @@ export namespace AutofixQueue {
           stop_requested: input.stop_requested ?? false,
         })
         .onConflictDoUpdate({
-          target: AutofixStateTable.project_id,
+          target: [AutofixStateTable.project_id, AutofixStateTable.directory],
           set: {
             profile: input.profile,
             status: input.status,
@@ -417,8 +462,8 @@ export namespace AutofixQueue {
     return broadcast(input.directory, input.project_id, input.profile)
   }
 
-  export async function getPrompt(project_id: string) {
-    return AutofixPrompt.resolve((await stateRow(project_id))?.prompt ?? undefined)
+  export async function getPrompt(project_id: string, directory: string) {
+    return AutofixPrompt.resolve((await stateRow(project_id, directory))?.prompt ?? undefined)
   }
 
   export async function setPrompt(input: { directory: string; project_id: string; profile: string }, prompt: AutofixSchema.Prompt) {
@@ -437,7 +482,7 @@ export namespace AutofixQueue {
       project_id: target.project_id,
       profile: target.profile,
     })
-    const current = await stateRow(target.project_id)
+    const current = await stateRow(target.project_id, target.directory)
     let cursor_created_at = opts?.full ? undefined : current?.source_cursor_created_at
     let cursor_external_id = opts?.full ? undefined : current?.source_cursor_external_id
     let imported = 0
@@ -482,6 +527,7 @@ export namespace AutofixQueue {
   export async function importFeedback(target: ResolvedTarget, list: PulledFeedback[]) {
     seed({
       project_id: target.project_id,
+      directory: target.directory,
       profile: target.profile,
     })
     const result = await save(target, list)
@@ -489,11 +535,11 @@ export namespace AutofixQueue {
     return result
   }
 
-  export async function listFeedback(project_id: string) {
-    return feedbackRows(project_id).then((rows) => rows.map(feedback))
+  export async function listFeedback(project_id: string, directory: string) {
+    return feedbackRows(project_id, directory).then((rows) => rows.map(feedback))
   }
 
-  export async function next(project_id: string) {
+  export async function next(project_id: string, directory: string) {
     const row = Database.use((db) =>
       db
         .select()
@@ -501,6 +547,7 @@ export namespace AutofixQueue {
         .where(
           and(
             eq(AutofixFeedbackTable.project_id, project_id),
+            eq(AutofixFeedbackTable.directory, directory),
             eq(AutofixFeedbackTable.status, "queued"),
             eq(AutofixFeedbackTable.muted, false),
           ),
@@ -512,7 +559,12 @@ export namespace AutofixQueue {
   }
 
   export async function getFeedback(id: string) {
-    const row = Database.use((db) => db.select().from(AutofixFeedbackTable).where(eq(AutofixFeedbackTable.id, id)).get())
+    const row = feedbackRow(id)
+    return row ? feedback(row) : undefined
+  }
+
+  export async function getFeedbackByScope(project_id: string, directory: string, id: string) {
+    const row = feedbackRow(id, project_id, directory)
     return row ? feedback(row) : undefined
   }
 
@@ -531,7 +583,7 @@ export namespace AutofixQueue {
   }
 
   export async function setMuted(input: { directory: string; project_id: string; profile: string }, id: string, muted: boolean) {
-    const row = Database.use((db) => db.select().from(AutofixFeedbackTable).where(eq(AutofixFeedbackTable.id, id)).get())
+    const row = feedbackRow(id, input.project_id, input.directory)
     if (!row) throw new Error("Autofix feedback not found")
     if (active(row.status)) throw new Error("Autofix feedback is already running")
     Database.use((db) =>
@@ -540,14 +592,20 @@ export namespace AutofixQueue {
         .set({
           muted,
         })
-        .where(eq(AutofixFeedbackTable.id, id))
+        .where(
+          and(
+            eq(AutofixFeedbackTable.id, id),
+            eq(AutofixFeedbackTable.project_id, input.project_id),
+            eq(AutofixFeedbackTable.directory, input.directory),
+          ),
+        )
         .run(),
     )
     return broadcast(input.directory, input.project_id, input.profile)
   }
 
   export async function repair(target: ResolvedTarget) {
-    const rows = await feedbackRows(target.project_id)
+    const rows = await feedbackRows(target.project_id, target.directory)
     const list = rows.filter((item) => active(item.status))
     if (!list.length) return
     const ids = list.map((item) => item.id)
@@ -564,6 +622,7 @@ export namespace AutofixQueue {
         .where(
           and(
             eq(AutofixRunTable.project_id, target.project_id),
+            eq(AutofixRunTable.directory, target.directory),
             inArray(AutofixRunTable.feedback_id, ids),
             inArray(AutofixRunTable.status, ["queued", "analyzing", "implementing", "verifying", "committing", "packaging"]),
           ),
@@ -592,15 +651,36 @@ export namespace AutofixQueue {
   }
 
   export async function reset(target: ResolvedTarget, id: string) {
-    const row = Database.use((db) => db.select().from(AutofixFeedbackTable).where(eq(AutofixFeedbackTable.id, id)).get())
+    const row = feedbackRow(id, target.project_id, target.directory)
     if (!row) throw new Error("Autofix feedback not found")
     const why = note(row, target)
     const runs = Database.use((db) =>
-      db.select({ id: AutofixRunTable.id }).from(AutofixRunTable).where(eq(AutofixRunTable.feedback_id, id)).all(),
+      db
+        .select({ id: AutofixRunTable.id })
+        .from(AutofixRunTable)
+        .where(
+          and(
+            eq(AutofixRunTable.project_id, target.project_id),
+            eq(AutofixRunTable.directory, target.directory),
+            eq(AutofixRunTable.feedback_id, id),
+          ),
+        )
+        .all(),
     )
-    Database.use((db) => db.delete(AutofixRunTable).where(eq(AutofixRunTable.feedback_id, id)).run())
+    Database.use((db) =>
+      db
+        .delete(AutofixRunTable)
+        .where(
+          and(
+            eq(AutofixRunTable.project_id, target.project_id),
+            eq(AutofixRunTable.directory, target.directory),
+            eq(AutofixRunTable.feedback_id, id),
+          ),
+        )
+        .run(),
+    )
     await setStatus(id, why ? "blocked" : "queued", why, undefined)
-    const state = await stateRow(target.project_id)
+    const state = await stateRow(target.project_id, target.directory)
     if (!state?.active_run_id) return
     if (!runs.some((item) => item.id === state.active_run_id)) return
     await setState({
@@ -615,14 +695,35 @@ export namespace AutofixQueue {
   }
 
   export async function remove(target: ResolvedTarget, id: string) {
-    const row = Database.use((db) => db.select().from(AutofixFeedbackTable).where(eq(AutofixFeedbackTable.id, id)).get())
+    const row = feedbackRow(id, target.project_id, target.directory)
     if (!row) throw new Error("Autofix feedback not found")
     if (active(row.status)) throw new Error("Autofix feedback is already running")
     const runs = Database.use((db) =>
-      db.select({ id: AutofixRunTable.id }).from(AutofixRunTable).where(eq(AutofixRunTable.feedback_id, id)).all(),
+      db
+        .select({ id: AutofixRunTable.id })
+        .from(AutofixRunTable)
+        .where(
+          and(
+            eq(AutofixRunTable.project_id, target.project_id),
+            eq(AutofixRunTable.directory, target.directory),
+            eq(AutofixRunTable.feedback_id, id),
+          ),
+        )
+        .all(),
     )
-    Database.use((db) => db.delete(AutofixFeedbackTable).where(eq(AutofixFeedbackTable.id, id)).run())
-    const state = await stateRow(target.project_id)
+    Database.use((db) =>
+      db
+        .delete(AutofixFeedbackTable)
+        .where(
+          and(
+            eq(AutofixFeedbackTable.id, id),
+            eq(AutofixFeedbackTable.project_id, target.project_id),
+            eq(AutofixFeedbackTable.directory, target.directory),
+          ),
+        )
+        .run(),
+    )
+    const state = await stateRow(target.project_id, target.directory)
     if (state?.active_run_id && runs.some((item) => item.id === state.active_run_id)) {
       await setState({
         directory: target.directory,
@@ -640,6 +741,7 @@ export namespace AutofixQueue {
 
   export async function createRun(input: {
     project_id: string
+    directory: string
     feedback_id: string
     status: AutofixSchema.RunStatus
     branch?: string
@@ -653,6 +755,7 @@ export namespace AutofixQueue {
         .values({
           id,
           project_id: input.project_id,
+          directory: input.directory,
           feedback_id: input.feedback_id,
           branch: input.branch ?? null,
           base_commit: input.base_commit ?? null,
@@ -661,22 +764,27 @@ export namespace AutofixQueue {
         })
         .run(),
     )
-    const item = await getRun(id)
+    const item = await getRunByScope(input.project_id, input.directory, id)
     if (!item) throw new Error("Failed to create autofix run")
     return item
   }
 
   export async function getRun(id: string) {
-    const row = Database.use((db) => db.select().from(AutofixRunTable).where(eq(AutofixRunTable.id, id)).get())
+    const row = runRow(id)
     return row ? run(row) : undefined
   }
 
-  export async function listRuns(project_id: string) {
+  export async function getRunByScope(project_id: string, directory: string, id: string) {
+    const row = runRow(id, project_id, directory)
+    return row ? run(row) : undefined
+  }
+
+  export async function listRuns(project_id: string, directory: string) {
     const rows = Database.use((db) =>
       db
         .select()
         .from(AutofixRunTable)
-        .where(eq(AutofixRunTable.project_id, project_id))
+        .where(and(eq(AutofixRunTable.project_id, project_id), eq(AutofixRunTable.directory, directory)))
         .orderBy(desc(AutofixRunTable.time_created))
         .all(),
     )
@@ -780,6 +888,7 @@ export namespace AutofixQueue {
 
   export async function addEvent(input: {
     project_id: string
+    directory: string
     run_id?: string
     feedback_id?: string
     phase: string
@@ -793,6 +902,7 @@ export namespace AutofixQueue {
         .values({
           id: ulid(),
           project_id: input.project_id,
+          directory: input.directory,
           run_id: input.run_id ?? null,
           feedback_id: input.feedback_id ?? null,
           phase: input.phase,
@@ -804,15 +914,19 @@ export namespace AutofixQueue {
     )
   }
 
-  export async function listEvents(input: { project_id: string; run_id?: string }) {
+  export async function listEvents(input: { project_id: string; directory: string; run_id?: string }) {
     const rows = Database.use((db) =>
       db
         .select()
         .from(AutofixEventTable)
         .where(
           input.run_id
-            ? and(eq(AutofixEventTable.project_id, input.project_id), eq(AutofixEventTable.run_id, input.run_id))
-            : eq(AutofixEventTable.project_id, input.project_id),
+            ? and(
+                eq(AutofixEventTable.project_id, input.project_id),
+                eq(AutofixEventTable.directory, input.directory),
+                eq(AutofixEventTable.run_id, input.run_id),
+              )
+            : and(eq(AutofixEventTable.project_id, input.project_id), eq(AutofixEventTable.directory, input.directory)),
         )
         .orderBy(desc(AutofixEventTable.time_created))
         .all(),
@@ -843,7 +957,9 @@ export namespace AutofixQueue {
   }
 
   export async function emitRun(directory: string, id: string) {
-    const item = await getRun(id)
+    const row = runRow(id)
+    if (!row) return
+    const item = run(row)
     if (!item) return
     AutofixEvent.emit(directory, {
       type: AutofixEvent.RunUpdated.type,
@@ -861,7 +977,19 @@ export namespace AutofixQueue {
       feedback: await getFeedback(run.feedback_id),
       attempts: await listAttempts(run.id),
       artifacts: await listArtifacts(run.id),
-      events: await listEvents({ project_id: run.project_id, run_id: run.id }),
+      events: await listEvents({ project_id: run.project_id, directory: run.directory, run_id: run.id }),
+    } satisfies AutofixSchema.Detail
+  }
+
+  export async function detailByScope(project_id: string, directory: string, id: string) {
+    const run = await getRunByScope(project_id, directory, id)
+    if (!run) return
+    return {
+      run,
+      feedback: await getFeedbackByScope(project_id, directory, run.feedback_id),
+      attempts: await listAttempts(run.id),
+      artifacts: await listArtifacts(run.id),
+      events: await listEvents({ project_id: run.project_id, directory: run.directory, run_id: run.id }),
     } satisfies AutofixSchema.Detail
   }
 }

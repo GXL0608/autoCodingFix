@@ -1025,6 +1025,7 @@ export type AutofixPlan = {
 export type AutofixRun = {
   id: string
   project_id: string
+  directory: string
   feedback_id: string
   session_id?: string
   branch?: string
@@ -1883,6 +1884,7 @@ export type AutofixImportInput = {
 export type AutofixFeedback = {
   id: string
   project_id: string
+  directory: string
   external_id: number
   created_at: number
   request_id?: string
@@ -1940,6 +1942,7 @@ export type AutofixAttempt = {
 export type AutofixEvent = {
   id: string
   project_id: string
+  directory: string
   run_id?: string
   feedback_id?: string
   phase: string

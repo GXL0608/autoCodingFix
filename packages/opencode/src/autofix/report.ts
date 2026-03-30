@@ -4,8 +4,8 @@ import { Filesystem } from "@/util/filesystem"
 import { AutofixQueue } from "./queue"
 
 export namespace AutofixReport {
-  export async function write(runID: string) {
-    const detail = await AutofixQueue.detail(runID)
+  export async function write(project_id: string, directory: string, runID: string) {
+    const detail = await AutofixQueue.detailByScope(project_id, directory, runID)
     if (!detail) throw new Error("Autofix report run not found")
     const plan = detail.run.plan
     const dir = path.join(Global.Path.data, "autofix", detail.run.project_id, detail.run.id)

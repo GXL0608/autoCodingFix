@@ -1345,9 +1345,8 @@ export default function Layout(props: ParentProps) {
   }
 
   function navigateToAutofix(directory: string) {
-    const root = projectRoot(directory)
-    server.projects.touch(root)
-    navigateWithSidebarReset(`/${base64Encode(root)}/autofix`)
+    server.projects.touch(directory)
+    navigateWithSidebarReset(`/${base64Encode(directory)}/autofix`)
   }
 
   function navigateToSession(session: Session | undefined) {

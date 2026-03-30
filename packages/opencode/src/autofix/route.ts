@@ -406,7 +406,7 @@ export const AutofixRoutes = lazy(() =>
           },
         },
       }),
-      async (c) => c.json(await AutofixQueue.listFeedback(Instance.project.id)),
+      async (c) => c.json(await AutofixQueue.listFeedback(Instance.project.id, Instance.directory)),
     )
     .get(
       "/run",
@@ -425,7 +425,7 @@ export const AutofixRoutes = lazy(() =>
           },
         },
       }),
-      async (c) => c.json(await AutofixQueue.listRuns(Instance.project.id)),
+      async (c) => c.json(await AutofixQueue.listRuns(Instance.project.id, Instance.directory)),
     )
     .get(
       "/run/:runID",
@@ -453,7 +453,7 @@ export const AutofixRoutes = lazy(() =>
       ),
       async (c) => {
         const { runID } = c.req.valid("param")
-        const result = await AutofixQueue.detail(runID)
+        const result = await AutofixQueue.detailByScope(Instance.project.id, Instance.directory, runID)
         if (!result) throw new Error("Autofix run not found")
         return c.json(result)
       },
@@ -486,7 +486,7 @@ export const AutofixRoutes = lazy(() =>
       async (c) => {
         const { runID } = c.req.valid("param")
         const body = c.req.valid("json")
-        return c.json(await AutofixRunner.continueRun(runID, body.prompt))
+        return c.json(await AutofixRunner.continueRun(Instance.directory, runID, body.prompt))
       },
     ),
 )

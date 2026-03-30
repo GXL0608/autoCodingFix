@@ -724,7 +724,7 @@ export default function AutofixPage() {
           <div class="rounded-xl border border-border-weak-base bg-surface-raised-base px-4 py-3">
             <div class="text-13-medium text-text-strong">导入说明</div>
             <div class="mt-2 text-12-regular text-text-weak whitespace-pre-wrap break-words">
-              导入数据会直接写入当前项目的 AutoCodingFix 反馈镜像表，左侧列表、执行、重置、历史记录都会继续走现有逻辑。
+              导入数据会直接写入当前目录的 AutoCodingFix 反馈镜像表，左侧列表、执行、重置、历史记录都会继续走现有逻辑。
               本地导入只会写入你当前粘贴或选择的 JSON 数据，不会额外同步数据库反馈；如果要拉数据库数据，请单独点击上方“同步全部反馈”。
               最简单可以直接导入 JSON 数组。`external_id` 必填，`recognized_text` 建议填写；`created_at`、`source`、
               `feedback_token`、`device_id`、`recognize_success` 等字段都可以省略，系统会自动补默认值。
@@ -888,7 +888,7 @@ export default function AutofixPage() {
         >
           <Show when={summary()} fallback={<div class="text-13-regular text-text-weak">正在加载状态...</div>}>
             {(sum) => (
-              <Show when={sum().state.supported} fallback={<div class="text-13-regular text-text-weak">当前项目暂不支持 AutoCodingFix。</div>}>
+              <Show when={sum().state.supported} fallback={<div class="text-13-regular text-text-weak">当前目录暂不支持 AutoCodingFix。</div>}>
                 <div class="grid grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)] gap-2.5 max-xl:grid-cols-1">
                   <div class="rounded-xl border border-border-weak-base bg-[linear-gradient(135deg,rgba(14,165,233,0.10),rgba(255,255,255,0))] px-3 py-2.5">
                     <div class="flex flex-wrap items-center gap-1.5">
