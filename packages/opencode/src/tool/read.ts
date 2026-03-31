@@ -3,6 +3,8 @@ import { createReadStream } from "fs"
 import * as fs from "fs/promises"
 import * as path from "path"
 import { createInterface } from "readline"
+import { execFile } from "child_process"
+import { promisify } from "util"
 import { Tool } from "./tool"
 import { LSP } from "../lsp"
 import { FileTime } from "../file/time"
@@ -11,6 +13,8 @@ import { Instance } from "../project/instance"
 import { assertExternalDirectory } from "./external-directory"
 import { InstructionPrompt } from "../session/instruction"
 import { Filesystem } from "../util/filesystem"
+
+const execFileAsync = promisify(execFile)
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -122,6 +126,30 @@ export const ReadTool = Tool.define("read", {
     const isImage = mime.startsWith("image/") && mime !== "image/svg+xml" && mime !== "image/vnd.fastbidsheet"
     const isPdf = mime === "application/pdf"
     if (isImage || isPdf) {
+      // For animated GIF files, try to extract key frames using ffmpeg
+      if (mime === "image/gif") {
+        const gifFrames = await extractGifFrames(filepath)
+        if (gifFrames && gifFrames.length > 1) {
+          const msg = `Animated GIF read successfully - extracted ${gifFrames.length} key frames for analysis`
+          return {
+            title,
+            output: msg,
+            metadata: {
+              preview: msg,
+              truncated: false,
+              loaded: instructions.map((i) => i.filepath),
+            },
+            attachments: gifFrames.map((frame, index) => ({
+              type: "file" as const,
+              mime: "image/png" as string,
+              filename: `frame_${index + 1}_of_${gifFrames.length}.png`,
+              url: `data:image/png;base64,${frame}`,
+            })),
+          }
+        }
+        // If ffmpeg is not available or GIF is static, fall through to normal handling
+      }
+
       const msg = `${isImage ? "Image" : "PDF"} read successfully`
       return {
         title,
@@ -289,5 +317,91 @@ async function isBinaryFile(filepath: string, fileSize: number): Promise<boolean
     return nonPrintableCount / result.bytesRead > 0.3
   } finally {
     await fh.close()
+  }
+}
+
+const MAX_GIF_FRAMES = 15 // Maximum number of frames to extract from animated GIF
+
+/**
+ * Extract key frames from an animated GIF using ffmpeg.
+ * Returns an array of base64-encoded PNG frame data, or null if extraction fails.
+ * Performs uniform sampling if the GIF has more frames than MAX_GIF_FRAMES.
+ */
+async function extractGifFrames(filepath: string): Promise<string[] | null> {
+  try {
+    // Check if ffmpeg is available
+    await execFileAsync("which", ["ffmpeg"])
+  } catch {
+    return null // ffmpeg not available, fall back to normal handling
+  }
+
+  const tmpDir = path.join(
+    (await fs.mkdtemp(path.join(path.dirname(filepath), ".gif-frames-"))),
+  )
+
+  try {
+    // First, get the total number of frames
+    let totalFrames: number
+    try {
+      const { stdout } = await execFileAsync("ffprobe", [
+        "-v", "error",
+        "-count_frames",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=nb_read_frames",
+        "-of", "csv=p=0",
+        filepath,
+      ])
+      totalFrames = parseInt(stdout.trim(), 10)
+      if (isNaN(totalFrames) || totalFrames <= 1) {
+        return null // Static GIF or single frame, use normal handling
+      }
+    } catch {
+      return null
+    }
+
+    // Extract all frames to temp directory
+    await execFileAsync("ffmpeg", [
+      "-y",
+      "-i", filepath,
+      "-vsync", "vfr",
+      `${tmpDir}/frame_%04d.png`,
+    ])
+
+    // Read extracted frame files
+    const frameFiles = (await fs.readdir(tmpDir))
+      .filter((f) => f.startsWith("frame_") && f.endsWith(".png"))
+      .sort()
+
+    if (frameFiles.length <= 1) {
+      return null // Single frame GIF
+    }
+
+    // Uniform sampling if too many frames
+    let selectedFiles: string[]
+    if (frameFiles.length > MAX_GIF_FRAMES) {
+      selectedFiles = []
+      const step = frameFiles.length / MAX_GIF_FRAMES
+      for (let i = 0; i < MAX_GIF_FRAMES; i++) {
+        const idx = Math.min(Math.floor(i * step), frameFiles.length - 1)
+        selectedFiles.push(frameFiles[idx])
+      }
+    } else {
+      selectedFiles = frameFiles
+    }
+
+    // Read frames as base64
+    const frames: string[] = []
+    for (const file of selectedFiles) {
+      const framePath = path.join(tmpDir, file)
+      const buffer = await fs.readFile(framePath)
+      frames.push(buffer.toString("base64"))
+    }
+
+    return frames
+  } catch {
+    return null // Any error, fall back to normal handling
+  } finally {
+    // Clean up temp directory
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
   }
 }

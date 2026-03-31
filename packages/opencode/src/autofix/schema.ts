@@ -47,6 +47,9 @@ export namespace AutofixSchema {
   ])
   export type RunStatus = z.infer<typeof run_status>
 
+  export const run_mode = z.enum(["legacy", "harness"])
+  export type RunMode = z.infer<typeof run_mode>
+
   export const attempt_status = z.enum(["pending", "running", "verified", "failed", "stopped"])
   export type AttemptStatus = z.infer<typeof attempt_status>
 
@@ -108,6 +111,84 @@ export namespace AutofixSchema {
   export const prompt_partial = prompt.partial()
   export type PromptPartial = z.infer<typeof prompt_partial>
 
+  export const harness_limit = z
+    .object({
+      search: z.number().int(),
+      read: z.number().int(),
+      bash: z.number().int(),
+    })
+    .meta({
+      ref: "AutofixHarnessLimit",
+    })
+  export type HarnessLimit = z.infer<typeof harness_limit>
+
+  export const harness = z
+    .object({
+      enabled: z.boolean(),
+      fallback_legacy: z.boolean(),
+      survey: z.boolean(),
+      review: z.boolean(),
+      verify: z.boolean(),
+      limits: harness_limit,
+      overview: z.string(),
+      analysis: z.string(),
+      build: z.string(),
+      review_note: z.string(),
+      verify_note: z.string(),
+    })
+    .meta({
+      ref: "AutofixHarness",
+    })
+  export type Harness = z.infer<typeof harness>
+
+  export const harness_session = z
+    .object({
+      kind: z.string(),
+      session_id: z.string(),
+    })
+    .meta({
+      ref: "AutofixHarnessSession",
+    })
+  export type HarnessSession = z.infer<typeof harness_session>
+
+  export const harness_survey = z
+    .object({
+      summary: z.string(),
+      scope: z.array(z.string()),
+      files: z.array(z.string()),
+      risks: z.array(z.string()),
+    })
+    .meta({
+      ref: "AutofixHarnessSurvey",
+    })
+  export type HarnessSurvey = z.infer<typeof harness_survey>
+
+  export const harness_decision = z
+    .object({
+      ok: z.boolean(),
+      summary: z.string(),
+      issues: z.array(z.string()),
+      next: z.array(z.string()),
+    })
+    .meta({
+      ref: "AutofixHarnessDecision",
+    })
+  export type HarnessDecision = z.infer<typeof harness_decision>
+
+  export const harness_run = z
+    .object({
+      stage: z.string().optional(),
+      fallback: z.boolean().optional(),
+      fallback_reason: z.string().optional(),
+      survey: harness_survey.optional(),
+      plan_review: harness_decision.optional(),
+      sessions: z.array(harness_session),
+    })
+    .meta({
+      ref: "AutofixHarnessRun",
+    })
+  export type HarnessRun = z.infer<typeof harness_run>
+
   export const model = z
     .object({
       providerID: ProviderID.zod,
@@ -122,6 +203,7 @@ export namespace AutofixSchema {
     .object({
       model: model.optional(),
       variant: z.string().optional(),
+      mode: run_mode.optional(),
     })
     .meta({
       ref: "AutofixStartInput",
@@ -157,6 +239,7 @@ export namespace AutofixSchema {
       last_success_commit: z.string().optional(),
       last_success_version: z.string().optional(),
       prompt: prompt.optional(),
+      harness: harness.optional(),
       counts,
     })
     .meta({
@@ -214,9 +297,11 @@ export namespace AutofixSchema {
       last_success_commit: z.string().optional(),
       commit_hash: z.string().optional(),
       version: z.string().optional(),
+      mode: run_mode,
       status: run_status,
       failure_reason: z.string().optional(),
       plan: plan.optional(),
+      harness: harness_run.optional(),
       summary: z.string().optional(),
       report_json_path: z.string().optional(),
       report_md_path: z.string().optional(),
@@ -240,6 +325,8 @@ export namespace AutofixSchema {
       summary: z.string().optional(),
       error: z.string().optional(),
       verify_ok: z.boolean().optional(),
+      review: harness_decision.optional(),
+      gate: harness_decision.optional(),
       verify_log_path: z.string().optional(),
       package_log_path: z.string().optional(),
       files: z.array(z.string()).optional(),
@@ -349,6 +436,7 @@ export namespace AutofixSchema {
   export const continue_input = z
     .object({
       prompt: z.string().optional(),
+      mode: run_mode.optional(),
     })
     .meta({
       ref: "AutofixContinueInput",
@@ -366,6 +454,11 @@ export namespace AutofixSchema {
       ref: "AutofixPromptInput",
     })
   export type PromptInput = z.infer<typeof prompt_input>
+
+  export const harness_input = harness.meta({
+    ref: "AutofixHarnessInput",
+  })
+  export type HarnessInput = z.infer<typeof harness_input>
 
   export const summary = z
     .object({

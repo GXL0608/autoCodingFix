@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray } from "@/storage/db"
 import { Database } from "@/storage/db"
 import { AutofixArtifactTable, AutofixAttemptTable, AutofixEventTable, AutofixFeedbackTable, AutofixRunTable, AutofixStateTable } from "@/storage/schema"
 import { ulid } from "ulid"
+import { AutofixHarness } from "./harness"
 import { AutofixPrompt } from "./prompt"
 import { AutofixSchema } from "./schema"
 import { AutofixEvent } from "./events"
@@ -46,6 +47,7 @@ export namespace AutofixQueue {
       last_success_commit: row?.last_success_commit ?? undefined,
       last_success_version: row?.last_success_version ?? undefined,
       prompt: AutofixPrompt.resolve(row?.prompt ?? undefined),
+      harness: AutofixHarness.resolve(row?.harness ?? undefined),
       counts: counts(),
     } satisfies AutofixSchema.State
   }
@@ -89,6 +91,14 @@ export namespace AutofixQueue {
     const plan = AutofixSchema.plan.safeParse(
       row.plan && typeof row.plan === "object" ? { architecture: [], methods: [], flows: [], ...row.plan } : row.plan,
     )
+    const harness = AutofixSchema.harness_run.safeParse(
+      row.harness && typeof row.harness === "object"
+        ? {
+            ...row.harness,
+            sessions: row.harness.sessions ?? [],
+          }
+        : row.harness,
+    )
     return {
       id: row.id,
       project_id: row.project_id,
@@ -100,9 +110,11 @@ export namespace AutofixQueue {
       last_success_commit: row.last_success_commit ?? undefined,
       commit_hash: row.commit_hash ?? undefined,
       version: row.version ?? undefined,
+      mode: row.mode,
       status: row.status,
       failure_reason: row.failure_reason ?? undefined,
       plan: plan.success ? plan.data : undefined,
+      harness: harness.success ? harness.data : undefined,
       summary: row.summary ?? undefined,
       report_json_path: row.report_json_path ?? undefined,
       report_md_path: row.report_md_path ?? undefined,
@@ -115,6 +127,8 @@ export namespace AutofixQueue {
   }
 
   function attempt(row: AttemptRow) {
+    const review = AutofixSchema.harness_decision.safeParse(row.review)
+    const gate = AutofixSchema.harness_decision.safeParse(row.gate)
     return {
       id: row.id,
       run_id: row.run_id,
@@ -123,6 +137,8 @@ export namespace AutofixQueue {
       summary: row.summary ?? undefined,
       error: row.error ?? undefined,
       verify_ok: row.verify_ok ?? undefined,
+      review: review.success ? review.data : undefined,
+      gate: gate.success ? gate.data : undefined,
       verify_log_path: row.verify_log_path ?? undefined,
       package_log_path: row.package_log_path ?? undefined,
       files: row.files ?? undefined,
@@ -419,6 +435,7 @@ export namespace AutofixQueue {
         | "last_success_commit"
         | "last_success_version"
         | "prompt"
+        | "harness"
         | "stop_requested"
       >
     >,
@@ -439,6 +456,7 @@ export namespace AutofixQueue {
           last_success_commit: input.last_success_commit ?? null,
           last_success_version: input.last_success_version ?? null,
           prompt: input.prompt ?? null,
+          harness: input.harness ?? null,
           stop_requested: input.stop_requested ?? false,
         })
         .onConflictDoUpdate({
@@ -454,6 +472,7 @@ export namespace AutofixQueue {
             last_success_commit: input.last_success_commit,
             last_success_version: input.last_success_version,
             prompt: input.prompt,
+            harness: input.harness,
             stop_requested: input.stop_requested,
           },
         })
@@ -466,6 +485,10 @@ export namespace AutofixQueue {
     return AutofixPrompt.resolve((await stateRow(project_id, directory))?.prompt ?? undefined)
   }
 
+  export async function getHarness(project_id: string, directory: string) {
+    return AutofixHarness.resolve((await stateRow(project_id, directory))?.harness ?? undefined)
+  }
+
   export async function setPrompt(input: { directory: string; project_id: string; profile: string }, prompt: AutofixSchema.Prompt) {
     const next = AutofixPrompt.same(prompt, AutofixPrompt.resolve()) ? null : AutofixPrompt.serialize(prompt)
     return setState({
@@ -473,6 +496,16 @@ export namespace AutofixQueue {
       project_id: input.project_id,
       profile: input.profile,
       prompt: next,
+    })
+  }
+
+  export async function setHarness(input: { directory: string; project_id: string; profile: string }, harness: AutofixSchema.Harness) {
+    const next = AutofixHarness.same(harness, AutofixHarness.resolve()) ? null : harness
+    return setState({
+      directory: input.directory,
+      project_id: input.project_id,
+      profile: input.profile,
+      harness: next,
     })
   }
 
@@ -744,6 +777,7 @@ export namespace AutofixQueue {
     directory: string
     feedback_id: string
     status: AutofixSchema.RunStatus
+    mode?: AutofixSchema.RunMode
     branch?: string
     base_commit?: string
     last_success_commit?: string
@@ -760,6 +794,7 @@ export namespace AutofixQueue {
           branch: input.branch ?? null,
           base_commit: input.base_commit ?? null,
           last_success_commit: input.last_success_commit ?? null,
+          mode: input.mode ?? "legacy",
           status: input.status,
         })
         .run(),

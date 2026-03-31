@@ -77,6 +77,41 @@ export const AutofixRoutes = lazy(() =>
       },
     )
     .post(
+      "/harness",
+      describeRoute({
+        summary: "Set shared autofix harness policy",
+        description: "Persist the project-scoped Harness policy used for future Autofix runs.",
+        operationId: "experimental.autofix.harness.set",
+        responses: {
+          200: {
+            description: "Autofix summary",
+            content: {
+              "application/json": {
+                schema: resolver(AutofixSchema.summary),
+              },
+            },
+          },
+          ...errors(400),
+        },
+      }),
+      validator("json", AutofixSchema.harness_input),
+      async (c) => {
+        const cfg = await AutofixConfig.resolveForDirectory(Instance.directory)
+        if (!cfg) throw new Error("Autofix is not available for the current project")
+        const body = c.req.valid("json")
+        return c.json(
+          await AutofixQueue.setHarness(
+            {
+              directory: Instance.directory,
+              project_id: Instance.project.id,
+              profile: cfg.profile,
+            },
+            body,
+          ),
+        )
+      },
+    )
+    .post(
       "/start",
       describeRoute({
         summary: "Start autofix",
@@ -486,7 +521,7 @@ export const AutofixRoutes = lazy(() =>
       async (c) => {
         const { runID } = c.req.valid("param")
         const body = c.req.valid("json")
-        return c.json(await AutofixRunner.continueRun(Instance.directory, runID, body.prompt))
+        return c.json(await AutofixRunner.continueRun(Instance.directory, runID, body))
       },
     ),
 )

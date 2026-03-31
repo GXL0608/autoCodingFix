@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { AutofixHarness } from "../../src/autofix/harness"
 import { AutofixPrompt } from "../../src/autofix/prompt"
 import { Project } from "../../src/project/project"
 import { AutofixQueue } from "../../src/autofix/queue"
@@ -205,6 +206,64 @@ describe("autofix.queue.importFeedback", () => {
     })
 
     expect(summary.state.prompt).toEqual(AutofixPrompt.resolve())
+  })
+
+  test("persists harness policy across unrelated state updates", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const { project } = await Project.fromDirectory(tmp.path)
+    const target = cfg(project.id, tmp.path)
+
+    const harness = {
+      ...AutofixHarness.resolve(),
+      enabled: true,
+      build: "先走 Harness，再根据审查决定是否回退旧流程。",
+      limits: {
+        search: 3,
+        read: 6,
+        bash: 2,
+      },
+    }
+
+    await AutofixQueue.setHarness(target, harness)
+
+    let summary = await AutofixQueue.summary({
+      directory: tmp.path,
+      project_id: project.id,
+      profile: target.profile,
+      supported: true,
+    })
+    expect(summary.state.harness).toEqual(harness)
+
+    await AutofixQueue.setState({
+      directory: tmp.path,
+      project_id: project.id,
+      profile: target.profile,
+      status: "running",
+      active_run_id: "run-88",
+    })
+
+    summary = await AutofixQueue.summary({
+      directory: tmp.path,
+      project_id: project.id,
+      profile: target.profile,
+      supported: true,
+    })
+    expect(summary.state.harness).toEqual(harness)
+  })
+
+  test("returns effective default harness when no custom policy is saved", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const { project } = await Project.fromDirectory(tmp.path)
+    const target = cfg(project.id, tmp.path)
+
+    const summary = await AutofixQueue.summary({
+      directory: tmp.path,
+      project_id: project.id,
+      profile: target.profile,
+      supported: true,
+    })
+
+    expect(summary.state.harness).toEqual(AutofixHarness.resolve())
   })
 
   test("mutes queued feedback without losing the original status", async () => {

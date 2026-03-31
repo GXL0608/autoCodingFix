@@ -964,6 +964,26 @@ export type AutofixPrompt = {
   build_user: string
 }
 
+export type AutofixHarnessLimit = {
+  search: number
+  read: number
+  bash: number
+}
+
+export type AutofixHarness = {
+  enabled: boolean
+  fallback_legacy: boolean
+  survey: boolean
+  review: boolean
+  verify: boolean
+  limits: AutofixHarnessLimit
+  overview: string
+  analysis: string
+  build: string
+  review_note: string
+  verify_note: string
+}
+
 export type AutofixCounts = {
   queued: number
   running: number
@@ -987,6 +1007,7 @@ export type AutofixState = {
   last_success_commit?: string
   last_success_version?: string
   prompt?: AutofixPrompt
+  harness?: AutofixHarness
   counts: AutofixCounts
 }
 
@@ -1022,6 +1043,34 @@ export type AutofixPlan = {
   blockers?: Array<string>
 }
 
+export type AutofixHarnessSurvey = {
+  summary: string
+  scope: Array<string>
+  files: Array<string>
+  risks: Array<string>
+}
+
+export type AutofixHarnessDecision = {
+  ok: boolean
+  summary: string
+  issues: Array<string>
+  next: Array<string>
+}
+
+export type AutofixHarnessSession = {
+  kind: string
+  session_id: string
+}
+
+export type AutofixHarnessRun = {
+  stage?: string
+  fallback?: boolean
+  fallback_reason?: string
+  survey?: AutofixHarnessSurvey
+  plan_review?: AutofixHarnessDecision
+  sessions: Array<AutofixHarnessSession>
+}
+
 export type AutofixRun = {
   id: string
   project_id: string
@@ -1033,6 +1082,7 @@ export type AutofixRun = {
   last_success_commit?: string
   commit_hash?: string
   version?: string
+  mode: "legacy" | "harness"
   status:
     | "queued"
     | "analyzing"
@@ -1046,6 +1096,7 @@ export type AutofixRun = {
     | "stopped"
   failure_reason?: string
   plan?: AutofixPlan
+  harness?: AutofixHarnessRun
   summary?: string
   report_json_path?: string
   report_md_path?: string
@@ -1835,6 +1886,20 @@ export type AutofixPromptInput = {
   build_user: string
 }
 
+export type AutofixHarnessInput = {
+  enabled: boolean
+  fallback_legacy: boolean
+  survey: boolean
+  review: boolean
+  verify: boolean
+  limits: AutofixHarnessLimit
+  overview: string
+  analysis: string
+  build: string
+  review_note: string
+  verify_note: string
+}
+
 export type AutofixModel = {
   providerID: string
   modelID: string
@@ -1843,6 +1908,7 @@ export type AutofixModel = {
 export type AutofixStartInput = {
   model?: AutofixModel
   variant?: string
+  mode?: "legacy" | "harness"
 }
 
 export type AutofixSyncResult = {
@@ -1932,6 +1998,8 @@ export type AutofixAttempt = {
   summary?: string
   error?: string
   verify_ok?: boolean
+  review?: AutofixHarnessDecision
+  gate?: AutofixHarnessDecision
   verify_log_path?: string
   package_log_path?: string
   files?: Array<string>
@@ -1962,6 +2030,7 @@ export type AutofixDetail = {
 
 export type AutofixContinueInput = {
   prompt?: string
+  mode?: "legacy" | "harness"
 }
 
 export type Workspace = {
@@ -2907,6 +2976,36 @@ export type ExperimentalAutofixPromptSetResponses = {
 
 export type ExperimentalAutofixPromptSetResponse =
   ExperimentalAutofixPromptSetResponses[keyof ExperimentalAutofixPromptSetResponses]
+
+export type ExperimentalAutofixHarnessSetData = {
+  body?: AutofixHarnessInput
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/autofix/harness"
+}
+
+export type ExperimentalAutofixHarnessSetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ExperimentalAutofixHarnessSetError =
+  ExperimentalAutofixHarnessSetErrors[keyof ExperimentalAutofixHarnessSetErrors]
+
+export type ExperimentalAutofixHarnessSetResponses = {
+  /**
+   * Autofix summary
+   */
+  200: AutofixSummary
+}
+
+export type ExperimentalAutofixHarnessSetResponse =
+  ExperimentalAutofixHarnessSetResponses[keyof ExperimentalAutofixHarnessSetResponses]
 
 export type ExperimentalAutofixStartData = {
   body?: AutofixStartInput

@@ -20,6 +20,7 @@ export const AutofixStateTable = sqliteTable(
     last_success_commit: text(),
     last_success_version: text(),
     prompt: text(),
+    harness: text({ mode: "json" }).$type<AutofixSchema.Harness>(),
     stop_requested: integer({ mode: "boolean" })
       .notNull()
       .$default(() => false),
@@ -92,9 +93,11 @@ export const AutofixRunTable = sqliteTable(
     last_success_commit: text(),
     commit_hash: text(),
     version: text(),
+    mode: text().notNull().$type<AutofixSchema.RunMode>().$default(() => "legacy"),
     status: text().notNull().$type<AutofixSchema.RunStatus>(),
     failure_reason: text(),
     plan: text({ mode: "json" }),
+    harness: text({ mode: "json" }).$type<AutofixSchema.HarnessRun>(),
     summary: text(),
     report_json_path: text(),
     report_md_path: text(),
@@ -121,6 +124,8 @@ export const AutofixAttemptTable = sqliteTable(
     summary: text(),
     error: text(),
     verify_ok: integer({ mode: "boolean" }),
+    review: text({ mode: "json" }).$type<AutofixSchema.HarnessDecision>(),
+    gate: text({ mode: "json" }).$type<AutofixSchema.HarnessDecision>(),
     verify_log_path: text(),
     package_log_path: text(),
     files: text({ mode: "json" }).$type<string[]>(),

@@ -1,4 +1,4 @@
-import type { AutofixDetail, AutofixFeedback, AutofixPrompt, AutofixRun, AutofixSummary } from "@opencode-ai/sdk/v2/client"
+import type { AutofixDetail, AutofixFeedback, AutofixHarness, AutofixPrompt, AutofixRun, AutofixSummary } from "@opencode-ai/sdk/v2/client"
 import { Button } from "@opencode-ai/ui/button"
 import { Collapsible } from "@opencode-ai/ui/collapsible"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
@@ -53,6 +53,32 @@ const artifactText: Record<string, string> = {
   package: "安装包",
 }
 
+const modeText: Record<string, string> = {
+  legacy: "旧版流程",
+  harness: "Harness",
+}
+
+const stageText: Record<string, string> = {
+  survey: "上下文勘察",
+  planning: "修复规划",
+  "plan-review": "计划审查",
+  implementing: "执行修改",
+  review: "代码审查",
+  smoke: "本地验证",
+  gate: "提交前验证",
+  "legacy-fallback": "回退旧流程",
+  committing: "提交代码",
+  packaging: "构建产物",
+  done: "已完成",
+}
+
+const sessionText: Record<string, string> = {
+  survey: "上下文勘察",
+  plan_review: "计划审查",
+  review: "代码审查",
+  gate: "提交前验证",
+}
+
 const filters = [
   { value: "all", label: "全部状态" },
   { value: "queued", label: "待处理" },
@@ -85,6 +111,24 @@ const blank = {
   build_system: "",
   build_user: "",
 } satisfies AutofixPrompt
+
+const blankGuard = {
+  enabled: false,
+  fallback_legacy: true,
+  survey: true,
+  review: true,
+  verify: true,
+  limits: {
+    search: 5,
+    read: 8,
+    bash: 4,
+  },
+  overview: "",
+  analysis: "",
+  build: "",
+  review_note: "",
+  verify_note: "",
+} satisfies AutofixHarness
 
 function ink(status?: string) {
   if (status === "done" || status === "verified") return "text-emerald-700 dark:text-emerald-300"
@@ -127,6 +171,14 @@ function label(status?: string) {
     status ??
     "未知"
   )
+}
+
+function mode(mode?: string) {
+  return modeText[mode ?? ""] ?? mode ?? "未知模式"
+}
+
+function stage(stage?: string) {
+  return stageText[stage ?? ""] ?? stage ?? "暂无阶段"
 }
 
 function stamp(time?: number) {
@@ -172,6 +224,26 @@ function clone(prompt?: AutofixPrompt) {
   } satisfies AutofixPrompt
 }
 
+function cloneGuard(item?: AutofixHarness) {
+  return {
+    enabled: item?.enabled ?? false,
+    fallback_legacy: item?.fallback_legacy ?? true,
+    survey: item?.survey ?? true,
+    review: item?.review ?? true,
+    verify: item?.verify ?? true,
+    limits: {
+      search: item?.limits?.search ?? 5,
+      read: item?.limits?.read ?? 8,
+      bash: item?.limits?.bash ?? 4,
+    },
+    overview: item?.overview ?? "",
+    analysis: item?.analysis ?? "",
+    build: item?.build ?? "",
+    review_note: item?.review_note ?? "",
+    verify_note: item?.verify_note ?? "",
+  } satisfies AutofixHarness
+}
+
 function same(a?: AutofixPrompt, b?: AutofixPrompt) {
   return (
     (a?.analysis_system ?? "") === (b?.analysis_system ?? "") &&
@@ -179,6 +251,17 @@ function same(a?: AutofixPrompt, b?: AutofixPrompt) {
     (a?.build_system ?? "") === (b?.build_system ?? "") &&
     (a?.build_user ?? "") === (b?.build_user ?? "")
   )
+}
+
+function sameGuard(a?: AutofixHarness, b?: AutofixHarness) {
+  return JSON.stringify(cloneGuard(a)) === JSON.stringify(cloneGuard(b))
+}
+
+function num(value: string, fallback: number) {
+  const item = Number(value.trim())
+  if (!Number.isFinite(item)) return fallback
+  if (item < 1) return 1
+  return Math.round(item)
 }
 
 function Card(props: {
@@ -209,6 +292,44 @@ function Info(props: { name: string; value?: string | number | null }) {
   )
 }
 
+function Flag(props: {
+  name: string
+  body: string
+  value: boolean
+  onChange: (value: boolean) => void
+  disabled?: boolean
+}) {
+  return (
+    <div class="rounded-xl border border-border-weak-base bg-surface-base px-3 py-3">
+      <div class="flex items-center gap-3">
+        <div class="min-w-0">
+          <div class="text-12-medium text-text-strong">{props.name}</div>
+          <div class="mt-1 text-11-regular text-text-weak whitespace-pre-wrap break-words">{props.body}</div>
+        </div>
+        <div class="grow" />
+        <div class="flex items-center gap-1">
+          <Button
+            size="small"
+            variant={props.value ? "primary" : "ghost"}
+            disabled={props.disabled}
+            onClick={() => props.onChange(true)}
+          >
+            开启
+          </Button>
+          <Button
+            size="small"
+            variant={!props.value ? "secondary" : "ghost"}
+            disabled={props.disabled}
+            onClick={() => props.onChange(false)}
+          >
+            关闭
+          </Button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function AutofixPage() {
   const local = useLocal()
   const sdk = useSDK()
@@ -223,6 +344,8 @@ export default function AutofixPage() {
   const [infoOpen, setInfoOpen] = createSignal(true)
   const [shared, setShared] = createSignal<AutofixPrompt>(blank)
   const [saved, setSaved] = createSignal<AutofixPrompt>(blank)
+  const [guard, setGuard] = createSignal<AutofixHarness>(blankGuard)
+  const [safe, setSafe] = createSignal<AutofixHarness>(blankGuard)
   let tick = 0
 
   const [summary, summaryCtl] = createResource(
@@ -244,6 +367,7 @@ export default function AutofixPage() {
   const live = createMemo(() => summary()?.active_run)
   const liveItem = createMemo(() => items().find((item) => item.id === live()?.feedback_id))
   const dirty = createMemo(() => !same(shared(), saved()))
+  const dirtyGuard = createMemo(() => !sameGuard(guard(), safe()))
   const picked = createMemo(() => items().find((item) => item.id === feedbackID()))
   const pickedRow = createSelector(feedbackID)
   const liveRow = createSelector(() => live()?.feedback_id)
@@ -341,6 +465,16 @@ export default function AutofixPage() {
   })
 
   createEffect(() => {
+    const next = cloneGuard(summary()?.state.harness)
+    if (!sameGuard(guard(), safe())) return
+    if (sameGuard(safe(), next)) return
+    batch(() => {
+      setSafe(cloneGuard(next))
+      setGuard(cloneGuard(next))
+    })
+  })
+
+  createEffect(() => {
     const id = feedbackID()
     if (id && rows().some((item) => item.id === id)) return
     const liveID = liveItem()?.id
@@ -432,6 +566,7 @@ export default function AutofixPage() {
         modelID: item.id,
       },
       variant: local.model.variant.current() ?? undefined,
+      mode: guard().enabled ? ("harness" as const) : ("legacy" as const),
     }
   }
 
@@ -465,6 +600,35 @@ export default function AutofixPage() {
         showToast({
           title: "已保存通用提示词模板",
           description: "后续新的 AutoCodingFix 提示词会直接使用你刚保存的模板。",
+        })
+      })
+      .catch((err: unknown) => {
+        showToast({
+          variant: "error",
+          title: "AutoCodingFix 请求失败",
+          description: err instanceof Error ? err.message : String(err),
+        })
+      })
+    setBusy(undefined)
+  }
+
+  const saveGuard = async (close?: boolean) => {
+    setBusy("harness")
+    await sdk.client.experimental.autofix.harness
+      .set({
+        autofixHarnessInput: cloneGuard(guard()),
+      })
+      .then((result) => {
+        const next = cloneGuard((result.data as AutofixSummary | undefined)?.state.harness)
+        batch(() => {
+          summaryCtl.mutate(result.data as AutofixSummary | undefined)
+          setSafe(cloneGuard(next))
+          setGuard(cloneGuard(next))
+        })
+        if (close) dialog.close()
+        showToast({
+          title: "已保存 Harness 策略",
+          description: next.enabled ? "后续新的 AutoCodingFix 会优先进入 Harness 模式。" : "后续新的 AutoCodingFix 会继续默认走旧版流程。",
         })
       })
       .catch((err: unknown) => {
@@ -579,6 +743,138 @@ export default function AutofixPage() {
       </Dialog>
     )
   }
+
+  function DialogHarness() {
+    return (
+      <Dialog title="Harness 策略" fit>
+        <div class="flex max-h-[78vh] flex-col gap-3 overflow-y-auto pl-6 pr-2.5 pb-3">
+          <div class="rounded-xl border border-border-weak-base bg-surface-raised-base px-3 py-2.5 text-11-regular text-text-weak">
+            <div>Harness 模式会把 AutoCodingFix 拆成上下文勘察、计划审查、代码审查、提交前验证等阶段，并在失败时按策略回退到旧版流程。</div>
+            <div class="mt-1">
+              当前默认模式：
+              <span class="text-text-strong">{guard().enabled ? "Harness" : "旧版流程"}</span>
+              。
+            </div>
+            <div class="mt-1">{dirtyGuard() ? "有未保存修改，新的执行仍会使用上一次已保存策略。" : "保存后立即生效，影响后续新的顺序执行、执行当前反馈和继续处理。"}</div>
+          </div>
+
+          <div class="grid gap-3 xl:grid-cols-2">
+            <Flag
+              name="默认启用 Harness"
+              body="开启后，新的 AutoCodingFix 会优先走 Harness 编排；关闭后继续默认走旧版流程。"
+              value={guard().enabled}
+              disabled={busy() !== undefined}
+              onChange={(value) => setGuard((item) => ({ ...item, enabled: value }))}
+            />
+            <Flag
+              name="失败自动回退旧流程"
+              body="Harness 的勘察、审查或验证阶段失败后，自动回退到旧版 AutoCodingFix 流水线继续尝试。"
+              value={guard().fallback_legacy}
+              disabled={busy() !== undefined}
+              onChange={(value) => setGuard((item) => ({ ...item, fallback_legacy: value }))}
+            />
+            <Flag
+              name="启用上下文勘察"
+              body="先用 survey 子会话收集最小相关上下文，再把摘要注入后续阶段。"
+              value={guard().survey}
+              disabled={busy() !== undefined}
+              onChange={(value) => setGuard((item) => ({ ...item, survey: value }))}
+            />
+            <Flag
+              name="每轮代码审查"
+              body="每次生成修改后都先走 reviewer 子会话评估，再决定是否继续本地验证。"
+              value={guard().review}
+              disabled={busy() !== undefined}
+              onChange={(value) => setGuard((item) => ({ ...item, review: value }))}
+            />
+            <Flag
+              name="提交前验证"
+              body="smoke 验证通过后，再由 verifier 子会话决定是否允许进入提交阶段。"
+              value={guard().verify}
+              disabled={busy() !== undefined}
+              onChange={(value) => setGuard((item) => ({ ...item, verify: value }))}
+            />
+          </div>
+
+          <div class="grid gap-3 xl:grid-cols-3">
+            <TextField
+              label="搜索上限"
+              value={String(guard().limits.search)}
+              onChange={(value) => setGuard((item) => ({ ...item, limits: { ...item.limits, search: num(value, item.limits.search) } }))}
+            />
+            <TextField
+              label="读取上限"
+              value={String(guard().limits.read)}
+              onChange={(value) => setGuard((item) => ({ ...item, limits: { ...item.limits, read: num(value, item.limits.read) } }))}
+            />
+            <TextField
+              label="命令上限"
+              value={String(guard().limits.bash)}
+              onChange={(value) => setGuard((item) => ({ ...item, limits: { ...item.limits, bash: num(value, item.limits.bash) } }))}
+            />
+          </div>
+
+          <div class="grid gap-3 xl:grid-cols-2">
+            <TextField
+              label="通用治理说明"
+              multiline
+              spellcheck={false}
+              value={guard().overview}
+              onChange={(value) => setGuard((item) => ({ ...item, overview: value }))}
+              class="min-h-[160px] max-h-[260px] w-full overflow-y-auto"
+            />
+            <TextField
+              label="分析阶段详情"
+              multiline
+              spellcheck={false}
+              value={guard().analysis}
+              onChange={(value) => setGuard((item) => ({ ...item, analysis: value }))}
+              class="min-h-[160px] max-h-[260px] w-full overflow-y-auto"
+            />
+            <TextField
+              label="修改阶段详情"
+              multiline
+              spellcheck={false}
+              value={guard().build}
+              onChange={(value) => setGuard((item) => ({ ...item, build: value }))}
+              class="min-h-[160px] max-h-[260px] w-full overflow-y-auto"
+            />
+            <TextField
+              label="代码审查详情"
+              multiline
+              spellcheck={false}
+              value={guard().review_note}
+              onChange={(value) => setGuard((item) => ({ ...item, review_note: value }))}
+              class="min-h-[160px] max-h-[260px] w-full overflow-y-auto"
+            />
+            <TextField
+              label="提交前验证详情"
+              multiline
+              spellcheck={false}
+              value={guard().verify_note}
+              onChange={(value) => setGuard((item) => ({ ...item, verify_note: value }))}
+              class="min-h-[160px] max-h-[260px] w-full overflow-y-auto xl:col-span-2"
+            />
+          </div>
+
+          <div class="flex justify-end gap-2">
+            <Show when={dirtyGuard()}>
+              <Button size="large" variant="ghost" disabled={busy() !== undefined} onClick={() => setGuard(cloneGuard(safe()))}>
+                恢复已保存
+              </Button>
+            </Show>
+            <Button size="large" variant="ghost" disabled={busy() !== undefined} onClick={() => dialog.close()}>
+              关闭
+            </Button>
+            <Button size="large" variant="primary" disabled={busy() !== undefined || !dirtyGuard()} onClick={() => void saveGuard(true)}>
+              保存
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    )
+  }
+
   const startOne = () => {
     const item = picked()
     if (!item) return Promise.resolve()
@@ -794,6 +1090,7 @@ export default function AutofixPage() {
           runID: props.run.id,
           autofixContinueInput: {
             prompt: prompt().trim() || undefined,
+            mode: props.run.mode,
           },
         })
         .then(async (result) => {
@@ -868,6 +1165,14 @@ export default function AutofixPage() {
               >
                 导入本地反馈
               </Button>
+              <Button
+                size="small"
+                variant="secondary"
+                disabled={busy() !== undefined}
+                onClick={() => dialog.show(() => <DialogHarness />)}
+              >
+                {dirtyGuard() ? "Harness策略*" : "Harness策略"}
+              </Button>
               <Button size="small" variant="secondary" disabled={busy() !== undefined} onClick={() => dialog.show(() => <DialogPrompt />)}>
                 {dirty() ? "通用提示词*" : "通用提示词"}
               </Button>
@@ -890,14 +1195,20 @@ export default function AutofixPage() {
             {(sum) => (
               <Show when={sum().state.supported} fallback={<div class="text-13-regular text-text-weak">当前目录暂不支持 AutoCodingFix。</div>}>
                 <div class="grid grid-cols-[minmax(0,1.3fr)_minmax(320px,0.9fr)] gap-2.5 max-xl:grid-cols-1">
-                  <div class="rounded-xl border border-border-weak-base bg-[linear-gradient(135deg,rgba(14,165,233,0.10),rgba(255,255,255,0))] px-3 py-2.5">
-                    <div class="flex flex-wrap items-center gap-1.5">
-                      <span class={`inline-flex items-center rounded-full px-2.5 py-1 text-11-medium ${pill(sum().state.status)}`}>
-                        {label(sum().state.status)}
-                      </span>
-                      <span class="text-11-regular text-text-weak">分支：{sum().state.branch ?? "未知"}</span>
-                      <span class="text-11-regular text-text-weak">同步：{stamp(sum().state.last_sync_at)}</span>
-                    </div>
+                    <div class="rounded-xl border border-border-weak-base bg-[linear-gradient(135deg,rgba(14,165,233,0.10),rgba(255,255,255,0))] px-3 py-2.5">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <span class={`inline-flex items-center rounded-full px-2.5 py-1 text-11-medium ${pill(sum().state.status)}`}>
+                          {label(sum().state.status)}
+                        </span>
+                        <span class="rounded-full bg-surface-raised-base px-2 py-1 text-11-regular text-text-base">
+                          {mode(sum().state.harness?.enabled ? "harness" : "legacy")}
+                        </span>
+                        <Show when={sum().state.harness?.fallback_legacy}>
+                          <span class="rounded-full bg-surface-raised-base px-2 py-1 text-11-regular text-text-base">失败自动回退</span>
+                        </Show>
+                        <span class="text-11-regular text-text-weak">分支：{sum().state.branch ?? "未知"}</span>
+                        <span class="text-11-regular text-text-weak">同步：{stamp(sum().state.last_sync_at)}</span>
+                      </div>
                     <div class="mt-2.5 flex items-center gap-3">
                       <div class="text-20-semibold text-text-strong leading-none">{pct()}%</div>
                       <div class="text-11-regular text-text-weak">
@@ -936,13 +1247,21 @@ export default function AutofixPage() {
                     <div class="text-11-medium uppercase tracking-[0.08em] text-text-weak">当前执行</div>
                     <Show when={liveItem()} fallback={<div class="mt-1.5 text-12-regular text-text-weak">当前没有正在执行的反馈。</div>}>
                       {(item) => (
-                        <div class="mt-1.5 flex flex-col gap-1.5">
-                          <div class="flex items-center gap-1.5">
-                            <div class="text-13-medium text-text-strong">反馈 #{item().external_id}</div>
-                            <span class={`inline-flex items-center rounded-full px-2 py-0.5 text-11-medium ${pill(live()?.status)}`}>
-                              {label(live()?.status)}
-                            </span>
-                          </div>
+                          <div class="mt-1.5 flex flex-col gap-1.5">
+                            <div class="flex items-center gap-1.5">
+                              <div class="text-13-medium text-text-strong">反馈 #{item().external_id}</div>
+                              <span class={`inline-flex items-center rounded-full px-2 py-0.5 text-11-medium ${pill(live()?.status)}`}>
+                                {label(live()?.status)}
+                              </span>
+                              <span class="rounded-full bg-surface-base px-2 py-0.5 text-11-regular text-text-base">
+                                {mode(live()?.mode)}
+                              </span>
+                              <Show when={live()?.harness?.stage}>
+                                <span class="rounded-full bg-surface-base px-2 py-0.5 text-11-regular text-text-base">
+                                  {stage(live()?.harness?.stage)}
+                                </span>
+                              </Show>
+                            </div>
                           <div class="text-12-regular text-text-base whitespace-pre-wrap break-words line-clamp-2">
                             {text(item())}
                           </div>
@@ -1247,6 +1566,17 @@ export default function AutofixPage() {
                             <span class={`inline-flex items-center rounded-full px-2.5 py-1 text-11-medium ${pill(info().run.status)}`}>
                               {label(info().run.status)}
                             </span>
+                            <span class="rounded-full bg-surface-base px-2 py-1 text-11-regular text-text-base">{mode(info().run.mode)}</span>
+                            <Show when={info().run.harness?.stage}>
+                              <span class="rounded-full bg-surface-base px-2 py-1 text-11-regular text-text-base">
+                                {stage(info().run.harness?.stage)}
+                              </span>
+                            </Show>
+                            <Show when={info().run.harness?.fallback}>
+                              <span class="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-11-regular text-amber-700 dark:text-amber-300">
+                                已回退旧流程
+                              </span>
+                            </Show>
                             <span class="text-11-regular text-text-weak">版本 {info().run.version ?? "暂无"}</span>
                             <span class="text-11-regular text-text-weak">提交 {info().run.commit_hash ?? "暂无"}</span>
                             <div class="grow" />
@@ -1285,6 +1615,58 @@ export default function AutofixPage() {
                             <div class="mt-2 text-12-regular text-rose-700 dark:text-rose-300 whitespace-pre-wrap break-words">
                               {info().run.failure_reason}
                             </div>
+                          </div>
+                        </Show>
+
+                        <Show when={info().run.mode === "harness" || info().run.harness}>
+                          <div class="rounded-xl border border-border-weak-base bg-surface-raised-base px-3 py-3">
+                            <div class="flex flex-wrap items-center gap-2">
+                              <div class="text-12-medium text-text-strong">Harness 运行信息</div>
+                              <Show when={info().run.harness?.stage}>
+                                <span class="text-11-regular text-text-weak">{stage(info().run.harness?.stage)}</span>
+                              </Show>
+                            </div>
+
+                            <Show when={info().run.harness?.survey}>
+                              {(row) => (
+                                <div class="mt-3 rounded-xl border border-border-weak-base bg-surface-base px-3 py-3">
+                                  <div class="text-11-medium text-text-weak">survey 摘要</div>
+                                  <div class="mt-2 text-12-regular text-text-base whitespace-pre-wrap break-words">{row().summary}</div>
+                                  <Show when={row().files.length > 0}>
+                                    <div class="mt-2 text-11-regular text-text-weak break-words">关键文件：{row().files.join("，")}</div>
+                                  </Show>
+                                  <Show when={row().risks.length > 0}>
+                                    <div class="mt-2 text-11-regular text-text-weak break-words">风险：{row().risks.join("；")}</div>
+                                  </Show>
+                                </div>
+                              )}
+                            </Show>
+
+                            <Show when={info().run.harness?.plan_review}>
+                              {(row) => (
+                                <div class="mt-3 rounded-xl border border-border-weak-base bg-surface-base px-3 py-3">
+                                  <div class="flex items-center gap-2">
+                                    <div class="text-11-medium text-text-weak">计划审查</div>
+                                    <span class={`inline-flex items-center rounded-full px-2 py-0.5 text-11-medium ${pill(row().ok ? "verified" : "failed")}`}>
+                                      {row().ok ? "通过" : "驳回"}
+                                    </span>
+                                  </div>
+                                  <div class="mt-2 text-12-regular text-text-base whitespace-pre-wrap break-words">{row().summary}</div>
+                                </div>
+                              )}
+                            </Show>
+
+                            <Show when={(info().run.harness?.sessions.length ?? 0) > 0}>
+                              <div class="mt-3 flex flex-wrap gap-2">
+                                <For each={info().run.harness?.sessions ?? []}>
+                                  {(row) => (
+                                    <Button size="small" variant="secondary" onClick={() => openSession(row.session_id)}>
+                                      {sessionText[row.kind] ?? row.kind}
+                                    </Button>
+                                  )}
+                                </For>
+                              </div>
+                            </Show>
                           </div>
                         </Show>
 
@@ -1440,6 +1822,32 @@ export default function AutofixPage() {
                                       <div class="mt-2 text-11-regular text-text-weak break-words">
                                         修改文件：{row.files?.join("，")}
                                       </div>
+                                    </Show>
+                                    <Show when={row.review}>
+                                      {(item) => (
+                                        <div class="mt-2 rounded-xl border border-border-weak-base bg-surface-base px-3 py-2.5">
+                                          <div class="flex items-center gap-2">
+                                            <div class="text-11-medium text-text-weak">代码审查</div>
+                                            <span class={`inline-flex items-center rounded-full px-2 py-0.5 text-11-medium ${pill(item().ok ? "verified" : "failed")}`}>
+                                              {item().ok ? "通过" : "驳回"}
+                                            </span>
+                                          </div>
+                                          <div class="mt-2 text-12-regular text-text-base whitespace-pre-wrap break-words">{item().summary}</div>
+                                        </div>
+                                      )}
+                                    </Show>
+                                    <Show when={row.gate}>
+                                      {(item) => (
+                                        <div class="mt-2 rounded-xl border border-border-weak-base bg-surface-base px-3 py-2.5">
+                                          <div class="flex items-center gap-2">
+                                            <div class="text-11-medium text-text-weak">提交前验证</div>
+                                            <span class={`inline-flex items-center rounded-full px-2 py-0.5 text-11-medium ${pill(item().ok ? "verified" : "failed")}`}>
+                                              {item().ok ? "通过" : "驳回"}
+                                            </span>
+                                          </div>
+                                          <div class="mt-2 text-12-regular text-text-base whitespace-pre-wrap break-words">{item().summary}</div>
+                                        </div>
+                                      )}
                                     </Show>
                                     <Show when={row.error}>
                                       <div class="mt-2 text-11-regular text-rose-700 dark:text-rose-300 whitespace-pre-wrap break-words">

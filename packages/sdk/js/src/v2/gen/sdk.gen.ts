@@ -14,6 +14,7 @@ import type {
   AuthSetErrors,
   AuthSetResponses,
   AutofixContinueInput,
+  AutofixHarnessInput,
   AutofixImportInput,
   AutofixPromptInput,
   AutofixStartInput,
@@ -32,6 +33,8 @@ import type {
   ExperimentalAutofixDeleteFeedbackResponses,
   ExperimentalAutofixFeedbackResponses,
   ExperimentalAutofixGetResponses,
+  ExperimentalAutofixHarnessSetErrors,
+  ExperimentalAutofixHarnessSetResponses,
   ExperimentalAutofixImportFeedbackErrors,
   ExperimentalAutofixImportFeedbackResponses,
   ExperimentalAutofixMuteFeedbackErrors,
@@ -993,6 +996,49 @@ export class Prompt extends HeyApiClient {
   }
 }
 
+export class Harness extends HeyApiClient {
+  /**
+   * Set shared autofix harness policy
+   *
+   * Persist the project-scoped Harness policy used for future Autofix runs.
+   */
+  public set<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      autofixHarnessInput?: AutofixHarnessInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "autofixHarnessInput", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ExperimentalAutofixHarnessSetResponses,
+      ExperimentalAutofixHarnessSetErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/autofix/harness",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Run extends HeyApiClient {
   /**
    * List autofix runs
@@ -1505,6 +1551,11 @@ export class Autofix extends HeyApiClient {
   private _prompt?: Prompt
   get prompt(): Prompt {
     return (this._prompt ??= new Prompt({ client: this.client }))
+  }
+
+  private _harness?: Harness
+  get harness(): Harness {
+    return (this._harness ??= new Harness({ client: this.client }))
   }
 
   private _run?: Run

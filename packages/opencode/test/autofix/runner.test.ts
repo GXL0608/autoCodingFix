@@ -3,6 +3,7 @@ import path from "path"
 import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { AutofixAnalyzer } from "../../src/autofix/analysis"
 import { AutofixConfig } from "../../src/autofix/config"
+import { AutofixHarness } from "../../src/autofix/harness"
 import { AutofixQueue } from "../../src/autofix/queue"
 import { AutofixRunner } from "../../src/autofix/runner"
 import { AutofixSchema } from "../../src/autofix/schema"
@@ -17,12 +18,15 @@ Log.init({ print: false })
 
 let cfg: ReturnType<typeof spyOn> | undefined
 let analyze: ReturnType<typeof spyOn> | undefined
+let survey: ReturnType<typeof spyOn> | undefined
 
 afterEach(async () => {
   cfg?.mockRestore()
   analyze?.mockRestore()
+  survey?.mockRestore()
   cfg = undefined
   analyze = undefined
+  survey = undefined
   await resetDatabase()
 })
 
@@ -227,6 +231,98 @@ describe("autofix.runner", () => {
         expect(sum.state.status).toBe("blocked")
         expect(sum.state.note).toContain("uncommitted changes")
         expect(await AutofixQueue.listRuns(project.id, tmp.path)).toHaveLength(0)
+      },
+    })
+  })
+
+  test("falls back to legacy autofix flow when harness survey fails", async () => {
+    await using tmp = await tmpdir({
+      git: true,
+      init: async (dir) => {
+        await Bun.write(
+          path.join(dir, "package.json"),
+          JSON.stringify({
+            version: "1.0.0",
+            scripts: {
+              "desktop:webview": "echo ok",
+            },
+          }),
+        )
+        await Bun.write(path.join(dir, "build-mac-arm64-dmg.sh"), "#!/bin/sh\nexit 0\n")
+        await $`git add package.json build-mac-arm64-dmg.sh`.cwd(dir).quiet()
+        await $`git commit -m "fixture"`.cwd(dir).quiet()
+      },
+    })
+
+    const { project } = await Project.fromDirectory(tmp.path)
+    const next = target(project.id, tmp.path)
+    let seen = 0
+
+    cfg = spyOn(AutofixConfig, "resolveForDirectory").mockResolvedValue(next)
+    survey = spyOn(AutofixHarness, "survey").mockRejectedValue(new Error("survey exploded"))
+    analyze = spyOn(AutofixAnalyzer, "analyze").mockImplementation(async () => {
+      seen += 1
+      return {
+        summary: "回退旧流程后进入 legacy analyze",
+        scope: ["设置页"],
+        steps: ["继续修复"],
+        acceptance: ["能够自动继续"],
+        architecture: [],
+        methods: [],
+        flows: [],
+        automatable: false,
+        blockers: ["legacy blocked"],
+      }
+    })
+
+    await Instance.provide({
+      directory: tmp.path,
+      fn: async () => {
+        await AutofixQueue.setHarness(
+          {
+            directory: tmp.path,
+            project_id: project.id,
+            profile: next.profile,
+          },
+          {
+            enabled: true,
+            fallback_legacy: true,
+            survey: true,
+            review: true,
+            verify: true,
+            limits: {
+              search: 5,
+              read: 8,
+              bash: 4,
+            },
+            overview: "",
+            analysis: "",
+            build: "",
+            review_note: "",
+            verify_note: "",
+          },
+        )
+        await AutofixQueue.importFeedback(next, [item(1)])
+        const row = (await AutofixQueue.listFeedback(project.id, tmp.path))[0]
+        if (!row) throw new Error("expected imported feedback")
+
+        await AutofixRunner.startFeedback(
+          tmp.path,
+          row.id,
+          AutofixSchema.start_input.parse({
+            mode: "harness",
+          }),
+        )
+        await wait(async () => {
+          const runs = await AutofixQueue.listRuns(project.id, tmp.path)
+          return runs.some((item) => ["blocked", "failed", "done", "stopped"].includes(item.status))
+        })
+
+        const run = (await AutofixQueue.listRuns(project.id, tmp.path))[0]
+        expect(seen).toBe(1)
+        expect(run?.mode).toBe("harness")
+        expect(run?.harness?.fallback).toBe(true)
+        expect(run?.harness?.stage).toBe("legacy-fallback")
       },
     })
   })
