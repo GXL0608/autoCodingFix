@@ -2,10 +2,11 @@ import { Global } from "@/global"
 import { Filesystem } from "@/util/filesystem"
 import path from "path"
 import postgres from "postgres"
-import type { PulledFeedback, SyncCursor, TempAudio } from "../types"
+import type { PulledAttachment, PulledFeedback, SyncCursor, TempAudio } from "../types"
 
 export namespace CellFeedbackSource {
-  const refs = new Map<string, string>()
+  const ATTACHMENT_TABLE = "voice_feedback_attachments"
+  const refs = new Map<string, { schema?: string; table: string; ref: string }>()
 
   function client(dsn: string) {
     return postgres(dsn, {
@@ -78,7 +79,11 @@ export namespace CellFeedbackSource {
     if (hit) return hit
     const item = parse(cfg.table)
     if (item.schema) {
-      const value = ref(item)
+      const value = {
+        schema: item.schema,
+        table: item.table,
+        ref: ref(item),
+      }
       refs.set(key, value)
       return value
     }
@@ -105,12 +110,24 @@ export namespace CellFeedbackSource {
         )
       throw new Error(`PostgreSQL relation ${item.table} not found in the target database`)
     }
-    const value = ref({
+    const value = {
       schema: row.schema_name,
       table: row.table_name,
-    })
+      ref: ref({
+        schema: row.schema_name,
+        table: row.table_name,
+      }),
+    }
     refs.set(key, value)
     return value
+  }
+
+  async function attachment(sql: ReturnType<typeof client>, cfg: { dsn: string; table: string }) {
+    const base = await relation(sql, cfg)
+    return relation(sql, {
+      dsn: cfg.dsn,
+      table: base.schema ? `${base.schema}.${ATTACHMENT_TABLE}` : ATTACHMENT_TABLE,
+    })
   }
 
   export async function pull(
@@ -119,8 +136,8 @@ export namespace CellFeedbackSource {
     limit: number,
   ): Promise<PulledFeedback[]> {
     const sql = client(cfg.dsn)
-    const rows = await relation(sql, cfg)
-      .then((table) =>
+    try {
+      const rows = await relation(sql, cfg).then((table) =>
         cursor.created_at && cursor.external_id
           ? sql.unsafe(
               `
@@ -146,7 +163,7 @@ export namespace CellFeedbackSource {
                   recognize_response,
                   meta,
                   audio_blob is not null as has_audio
-                from ${table}
+                from ${table.ref}
                 where created_at > $1
                    or (created_at = $1 and id > $2)
                 order by created_at asc, id asc
@@ -178,38 +195,82 @@ export namespace CellFeedbackSource {
                   recognize_response,
                   meta,
                   audio_blob is not null as has_audio
-                from ${table}
+                from ${table.ref}
                 order by created_at asc, id asc
                 limit $1
               `,
               [limit],
             ),
       )
-      .finally(() => sql.end({ timeout: 0 }))
 
-    return rows.map((row) => ({
-      external_id: Number(row.id),
-      created_at: ms(row.created_at),
-      request_id: row.request_id ?? undefined,
-      source: row.source,
-      feedback_token: row.feedback_token,
-      device_id: row.device_id,
-      uploader: row.uploader ?? undefined,
-      app_version: row.app_version ?? undefined,
-      audio_filename: row.audio_filename ?? undefined,
-      audio_mime_type: row.audio_mime_type ?? undefined,
-      audio_size_bytes: row.audio_size_bytes ?? undefined,
-      audio_duration_ms: row.audio_duration_ms ?? undefined,
-      has_audio: Boolean(row.has_audio),
-      language: row.language ?? undefined,
-      recognized_text: row.recognized_text ?? undefined,
-      processing_time_ms: row.processing_time_ms === null ? undefined : Number(row.processing_time_ms),
-      recognize_success: Boolean(row.recognize_success),
-      recognize_http_status: row.recognize_http_status ?? undefined,
-      recognize_error: row.recognize_error ?? undefined,
-      recognize_response: row.recognize_response ?? undefined,
-      meta: row.meta ?? undefined,
-    }))
+      const ids = rows.map((row) => Number(row.id))
+      const grouped = new Map<number, PulledAttachment[]>()
+      if (ids.length) {
+        const res = await attachment(sql, cfg).then((table) =>
+          sql.unsafe(
+            `
+              select
+                id,
+                feedback_id,
+                created_at,
+                display_order,
+                file_name,
+                mime_type,
+                file_size_bytes,
+                file_blob
+              from ${table.ref}
+              where feedback_id = any($1)
+              order by feedback_id asc, display_order asc, created_at asc, id asc
+            `,
+            [ids],
+          ),
+        )
+        for (const row of res) {
+          const key = Number(row.feedback_id)
+          const list = grouped.get(key) ?? []
+          list.push({
+            external_id: Number(row.id),
+            created_at: ms(row.created_at),
+            display_order: Number(row.display_order ?? 0),
+            file_name: row.file_name ?? undefined,
+            mime_type: row.mime_type,
+            file_size_bytes: row.file_size_bytes ?? undefined,
+            file_blob: Buffer.isBuffer(row.file_blob) ? row.file_blob : Buffer.from(row.file_blob),
+          })
+          grouped.set(key, list)
+        }
+      }
+
+      return rows.map((row) => {
+        const external_id = Number(row.id)
+        return {
+          external_id,
+          created_at: ms(row.created_at),
+          request_id: row.request_id ?? undefined,
+          source: row.source,
+          feedback_token: row.feedback_token,
+          device_id: row.device_id,
+          uploader: row.uploader ?? undefined,
+          app_version: row.app_version ?? undefined,
+          audio_filename: row.audio_filename ?? undefined,
+          audio_mime_type: row.audio_mime_type ?? undefined,
+          audio_size_bytes: row.audio_size_bytes ?? undefined,
+          audio_duration_ms: row.audio_duration_ms ?? undefined,
+          has_audio: Boolean(row.has_audio),
+          language: row.language ?? undefined,
+          recognized_text: row.recognized_text ?? undefined,
+          processing_time_ms: row.processing_time_ms === null ? undefined : Number(row.processing_time_ms),
+          recognize_success: Boolean(row.recognize_success),
+          recognize_http_status: row.recognize_http_status ?? undefined,
+          recognize_error: row.recognize_error ?? undefined,
+          recognize_response: row.recognize_response ?? undefined,
+          meta: row.meta ?? undefined,
+          attachments: grouped.get(external_id) ?? [],
+        }
+      })
+    } finally {
+      await sql.end({ timeout: 0 })
+    }
   }
 
   export async function fetchAudio(
@@ -226,7 +287,7 @@ export namespace CellFeedbackSource {
               audio_filename,
               audio_mime_type,
               audio_size_bytes
-            from ${table}
+            from ${table.ref}
             where id = $1
             limit 1
           `,

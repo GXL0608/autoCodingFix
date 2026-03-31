@@ -1919,6 +1919,14 @@ export type AutofixSyncResult = {
   cursor_external_id?: number
 }
 
+export type AutofixImportAttachment = {
+  display_order?: number
+  file_name?: string
+  mime_type: string
+  file_size_bytes?: number
+  file_blob_base64: string
+}
+
 export type AutofixImportItem = {
   external_id: number
   created_at?: number | string
@@ -1941,10 +1949,22 @@ export type AutofixImportItem = {
   recognize_error?: string
   recognize_response?: unknown
   meta?: unknown
+  attachments?: Array<AutofixImportAttachment>
 }
 
 export type AutofixImportInput = {
   items: Array<AutofixImportItem>
+}
+
+export type AutofixFeedbackAttachment = {
+  id: string
+  feedback_id: string
+  external_id?: number
+  created_at: number
+  display_order: number
+  file_name?: string
+  mime_type: string
+  file_size_bytes?: number
 }
 
 export type AutofixFeedback = {
@@ -1972,6 +1992,7 @@ export type AutofixFeedback = {
   recognize_response?: unknown
   uploader?: unknown
   meta?: unknown
+  attachments: Array<AutofixFeedbackAttachment>
   muted: boolean
   status:
     | "queued"

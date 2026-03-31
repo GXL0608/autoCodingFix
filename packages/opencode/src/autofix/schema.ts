@@ -2,6 +2,26 @@ import z from "zod"
 import { ModelID, ProviderID } from "@/provider/schema"
 
 export namespace AutofixSchema {
+  function bytes(input: string, ctx: z.RefinementCtx) {
+    const text = input.trim()
+    if (!text) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Invalid base64 payload",
+      })
+      return z.NEVER
+    }
+    const buf = Buffer.from(text, "base64")
+    if (!buf.byteLength) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Invalid base64 payload",
+      })
+      return z.NEVER
+    }
+    return buf
+  }
+
   function time(input: number | string, ctx: z.RefinementCtx) {
     if (typeof input === "number" && Number.isFinite(input)) return input
     const text = String(input).trim()
@@ -224,6 +244,22 @@ export namespace AutofixSchema {
     })
   export type Counts = z.infer<typeof counts>
 
+  export const feedback_attachment = z
+    .object({
+      id: z.string(),
+      feedback_id: z.string(),
+      external_id: z.number().int().optional(),
+      created_at: z.number(),
+      display_order: z.number().int(),
+      file_name: z.string().optional(),
+      mime_type: z.string(),
+      file_size_bytes: z.number().int().optional(),
+    })
+    .meta({
+      ref: "AutofixFeedbackAttachment",
+    })
+  export type FeedbackAttachment = z.infer<typeof feedback_attachment>
+
   export const state = z
     .object({
       directory: z.string(),
@@ -273,6 +309,7 @@ export namespace AutofixSchema {
       recognize_response: z.any().optional(),
       uploader: z.any().optional(),
       meta: z.any().optional(),
+      attachments: z.array(feedback_attachment),
       muted: z.boolean(),
       status: feedback_status,
       note: z.string().optional(),
@@ -387,6 +424,30 @@ export namespace AutofixSchema {
     })
   export type Sync = z.infer<typeof sync>
 
+  export const import_attachment = z
+    .object({
+      display_order: z.coerce.number().int().optional(),
+      file_name: z.string().optional(),
+      mime_type: z.string().regex(/^image\//),
+      file_size_bytes: z.coerce.number().int().optional(),
+      file_blob_base64: z.string().min(1),
+    })
+    .transform((item, ctx) => {
+      const file_blob = bytes(item.file_blob_base64, ctx)
+      return {
+        created_at: 0,
+        display_order: item.display_order ?? 0,
+        file_name: item.file_name,
+        mime_type: item.mime_type,
+        file_size_bytes: item.file_size_bytes ?? file_blob.byteLength,
+        file_blob,
+      }
+    })
+    .meta({
+      ref: "AutofixImportAttachment",
+    })
+  export type ImportAttachment = z.infer<typeof import_attachment>
+
   export const import_item = z
     .object({
       external_id: z.coerce.number().int(),
@@ -413,11 +474,16 @@ export namespace AutofixSchema {
       recognize_error: z.string().optional(),
       recognize_response: z.any().optional(),
       meta: z.any().optional(),
+      attachments: z.array(import_attachment).default([]),
     })
     .transform((item) => ({
       ...item,
+      attachments: item.attachments.map((file) => ({
+        ...file,
+        created_at: item.created_at,
+      })),
       feedback_token: item.feedback_token ?? `manual-${item.external_id}`,
-      recognize_success: item.recognize_success ?? !!(item.recognized_text?.trim() || item.meta),
+      recognize_success: item.recognize_success ?? !!(item.recognized_text?.trim() || item.meta || item.attachments.length),
     }))
     .meta({
       ref: "AutofixImportItem",

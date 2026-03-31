@@ -3,6 +3,7 @@ export {
   AutofixArtifactTable,
   AutofixAttemptTable,
   AutofixEventTable,
+  AutofixFeedbackAttachmentTable,
   AutofixFeedbackTable,
   AutofixRunTable,
   AutofixStateTable,

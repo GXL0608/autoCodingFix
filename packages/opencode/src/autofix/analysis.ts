@@ -1,7 +1,7 @@
 import { Session } from "@/session"
 import { SessionPrompt } from "@/session/prompt"
-import { pathToFileURL } from "url"
 import z from "zod"
+import { AutofixInput } from "./input"
 import { AutofixPrompt } from "./prompt"
 import { AutofixSchema } from "./schema"
 import type { RunCtx, TempAudio } from "./types"
@@ -16,12 +16,19 @@ export namespace AutofixAnalyzer {
 
   async function run(
     ctx: RunCtx,
+    feedback: AutofixSchema.Feedback,
     audio?: TempAudio,
     extra?: string,
     prompt?: AutofixSchema.Prompt,
     pick?: AutofixSchema.StartInput,
   ) {
     const item = AutofixPrompt.analyze(ctx, extra, prompt)
+    const built = await AutofixInput.build({
+      feedback,
+      text: item.text,
+      audio,
+    })
+    try {
     const msg = await SessionPrompt.prompt({
       sessionID: ctx.session_id as Parameters<typeof SessionPrompt.prompt>[0]["sessionID"],
       agent: "plan",
@@ -33,25 +40,13 @@ export namespace AutofixAnalyzer {
         retryCount: 2,
       },
       variant: pick?.variant,
-      parts: [
-        {
-          type: "text",
-          text: item.text,
-        },
-        ...(audio
-          ? [
-              {
-                type: "file" as const,
-                url: pathToFileURL(audio.path).href,
-                filename: audio.filename,
-                mime: audio.mime,
-              },
-            ]
-          : []),
-      ],
+      parts: built.parts,
     })
     if (msg.info.role !== "assistant") throw new Error("Autofix plan did not return an assistant message")
     return AutofixSchema.plan.parse(msg.info.structured)
+    } finally {
+      await AutofixInput.cleanup(built.temp)
+    }
   }
 
   function retry(plan: AutofixSchema.Plan, extra?: string) {
@@ -69,13 +64,14 @@ export namespace AutofixAnalyzer {
 
   export async function analyze(
     ctx: RunCtx,
+    feedback: AutofixSchema.Feedback,
     audio?: TempAudio,
     extra?: string,
     prompt?: AutofixSchema.Prompt,
     pick?: AutofixSchema.StartInput,
   ) {
-    const plan = await run(ctx, audio, extra, prompt, pick)
+    const plan = await run(ctx, feedback, audio, extra, prompt, pick)
     if (plan.automatable || !plan.blockers?.length) return plan
-    return run(ctx, audio, retry(plan, extra), prompt, pick)
+    return run(ctx, feedback, audio, retry(plan, extra), prompt, pick)
   }
 }

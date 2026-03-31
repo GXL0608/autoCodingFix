@@ -1,17 +1,26 @@
 import { and, asc, desc, eq, inArray } from "@/storage/db"
 import { Database } from "@/storage/db"
-import { AutofixArtifactTable, AutofixAttemptTable, AutofixEventTable, AutofixFeedbackTable, AutofixRunTable, AutofixStateTable } from "@/storage/schema"
+import {
+  AutofixArtifactTable,
+  AutofixAttemptTable,
+  AutofixEventTable,
+  AutofixFeedbackAttachmentTable,
+  AutofixFeedbackTable,
+  AutofixRunTable,
+  AutofixStateTable,
+} from "@/storage/schema"
 import { ulid } from "ulid"
 import { AutofixHarness } from "./harness"
 import { AutofixPrompt } from "./prompt"
 import { AutofixSchema } from "./schema"
 import { AutofixEvent } from "./events"
 import { CellFeedbackSource } from "./source/postgres"
-import type { PulledFeedback, ResolvedTarget } from "./types"
+import type { PulledAttachment, PulledFeedback, ResolvedTarget } from "./types"
 
 export namespace AutofixQueue {
   type StateRow = typeof AutofixStateTable.$inferSelect
   type FeedbackRow = typeof AutofixFeedbackTable.$inferSelect
+  type AttachmentRow = typeof AutofixFeedbackAttachmentTable.$inferSelect
   type RunRow = typeof AutofixRunTable.$inferSelect
   type AttemptRow = typeof AutofixAttemptTable.$inferSelect
   type ArtifactRow = typeof AutofixArtifactTable.$inferSelect
@@ -52,7 +61,20 @@ export namespace AutofixQueue {
     } satisfies AutofixSchema.State
   }
 
-  function feedback(row: FeedbackRow) {
+  function attachment(row: AttachmentRow) {
+    return {
+      id: row.id,
+      feedback_id: row.feedback_id,
+      external_id: row.external_id ?? undefined,
+      created_at: row.created_at,
+      display_order: row.display_order,
+      file_name: row.file_name ?? undefined,
+      mime_type: row.mime_type,
+      file_size_bytes: row.file_size_bytes ?? undefined,
+    } satisfies AutofixSchema.FeedbackAttachment
+  }
+
+  function feedback(row: FeedbackRow, attachments: AutofixSchema.FeedbackAttachment[] = []) {
     return {
       id: row.id,
       project_id: row.project_id,
@@ -78,6 +100,7 @@ export namespace AutofixQueue {
       recognize_response: row.recognize_response ?? undefined,
       uploader: row.uploader ?? undefined,
       meta: row.meta ?? undefined,
+      attachments,
       muted: row.muted,
       status: row.status,
       note: row.note ?? undefined,
@@ -230,27 +253,99 @@ export namespace AutofixQueue {
     )
   }
 
-  function note(
+  function attachmentRows(feedback_id: string[]) {
+    if (!feedback_id.length) return Promise.resolve([] as AttachmentRow[])
+    return Database.use((db) =>
+      db
+        .select()
+        .from(AutofixFeedbackAttachmentTable)
+        .where(inArray(AutofixFeedbackAttachmentTable.feedback_id, feedback_id))
+        .orderBy(
+          asc(AutofixFeedbackAttachmentTable.feedback_id),
+          asc(AutofixFeedbackAttachmentTable.display_order),
+          asc(AutofixFeedbackAttachmentTable.created_at),
+          asc(AutofixFeedbackAttachmentTable.id),
+        )
+        .all(),
+    )
+  }
+
+  async function attachments(feedback_id: string[]) {
+    const rows = await attachmentRows(feedback_id)
+    const grouped = new Map<string, AutofixSchema.FeedbackAttachment[]>()
+    for (const row of rows) {
+      const list = grouped.get(row.feedback_id) ?? []
+      list.push(attachment(row))
+      grouped.set(row.feedback_id, list)
+    }
+    return grouped
+  }
+
+  async function files(feedback_id: string) {
+    return Database.use((db) =>
+      db
+        .select()
+        .from(AutofixFeedbackAttachmentTable)
+        .where(eq(AutofixFeedbackAttachmentTable.feedback_id, feedback_id))
+        .orderBy(
+          asc(AutofixFeedbackAttachmentTable.display_order),
+          asc(AutofixFeedbackAttachmentTable.created_at),
+          asc(AutofixFeedbackAttachmentTable.id),
+        )
+        .all(),
+    )
+  }
+
+  async function replaceAttachments(feedback_id: string, items: PulledAttachment[]) {
+    Database.use((db) =>
+      db.delete(AutofixFeedbackAttachmentTable).where(eq(AutofixFeedbackAttachmentTable.feedback_id, feedback_id)).run(),
+    )
+    if (!items.length) return
+    Database.use((db) =>
+      db
+        .insert(AutofixFeedbackAttachmentTable)
+        .values(
+          items.map((item) => ({
+            id: ulid(),
+            feedback_id,
+            external_id: item.external_id ?? null,
+            created_at: item.created_at,
+            display_order: item.display_order,
+            file_name: item.file_name ?? null,
+            mime_type: item.mime_type,
+            file_size_bytes: item.file_size_bytes ?? null,
+            file_blob: item.file_blob,
+          })),
+        )
+        .run(),
+    )
+  }
+
+  async function note(
     item: {
+      id?: string
       recognized_text?: string | null
       meta?: unknown
       has_audio: boolean
       audio_size_bytes?: number | null
+      attachments?: Array<{ mime_type: string }>
     },
     cfg: ResolvedTarget,
   ) {
     if (item.recognized_text?.trim()) return
     if (item.meta && JSON.stringify(item.meta) !== "{}") return
+    if (item.attachments?.some((file) => file.mime_type.startsWith("image/"))) return
+    if (item.id && (await files(item.id)).some((file) => file.mime_type.startsWith("image/"))) return
     if (!cfg.feedback.use_audio_when_text_missing) return "recognized_text is empty and audio fallback is disabled"
     if (!item.has_audio) return "recognized_text is empty and no audio is available"
     if ((item.audio_size_bytes ?? 0) > cfg.feedback.max_audio_bytes)
       return `audio blob exceeds max_audio_bytes (${cfg.feedback.max_audio_bytes})`
   }
 
-  function status(item: PulledFeedback, cfg: ResolvedTarget, prev?: FeedbackRow) {
+  async function status(item: PulledFeedback, cfg: ResolvedTarget, prev?: FeedbackRow) {
     if (prev && ["done", "failed", "stopped"].includes(prev.status)) return prev.status
     if (prev && active(prev.status)) return prev.status
-    return note(item, cfg) ? "blocked" : "queued"
+    return (await note(item, cfg)) ? "blocked" : "queued"
   }
 
   function seed(input: { project_id: string; directory: string; profile: string }) {
@@ -296,13 +391,14 @@ export namespace AutofixQueue {
           )
           .get(),
       )
-      const next = status(item, target, prev)
-      const why = note(item, target)
+      const next = await status(item, target, prev)
+      const why = await note(item, target)
+      const id = prev?.id ?? ulid()
       Database.use((db) =>
         db
           .insert(AutofixFeedbackTable)
           .values({
-            id: prev?.id ?? ulid(),
+            id,
             project_id: target.project_id,
             directory: target.directory,
             external_id: item.external_id,
@@ -361,6 +457,7 @@ export namespace AutofixQueue {
           })
           .run(),
       )
+      await replaceAttachments(id, item.attachments)
       if (prev) updated += 1
       if (!prev) imported += 1
       if (next === "blocked") blocked += 1
@@ -569,7 +666,9 @@ export namespace AutofixQueue {
   }
 
   export async function listFeedback(project_id: string, directory: string) {
-    return feedbackRows(project_id, directory).then((rows) => rows.map(feedback))
+    const rows = await feedbackRows(project_id, directory)
+    const grouped = await attachments(rows.map((row) => row.id))
+    return rows.map((row) => feedback(row, grouped.get(row.id) ?? []))
   }
 
   export async function next(project_id: string, directory: string) {
@@ -593,12 +692,16 @@ export namespace AutofixQueue {
 
   export async function getFeedback(id: string) {
     const row = feedbackRow(id)
-    return row ? feedback(row) : undefined
+    if (!row) return
+    const grouped = await attachments([row.id])
+    return feedback(row, grouped.get(row.id) ?? [])
   }
 
   export async function getFeedbackByScope(project_id: string, directory: string, id: string) {
     const row = feedbackRow(id, project_id, directory)
-    return row ? feedback(row) : undefined
+    if (!row) return
+    const grouped = await attachments([row.id])
+    return feedback(row, grouped.get(row.id) ?? [])
   }
 
   export async function setStatus(id: string, status: AutofixSchema.FeedbackStatus, note?: string, last_run_id?: string) {
@@ -663,14 +766,10 @@ export namespace AutofixQueue {
         .run(),
     )
     await Promise.all(
-      list.map((item) =>
-        setStatus(
-          item.id,
-          note(item, target) ? "blocked" : "failed",
-          note(item, target) ?? msg,
-          item.last_run_id ?? undefined,
-        ),
-      ),
+      list.map(async (item) => {
+        const why = await note(item, target)
+        return setStatus(item.id, why ? "blocked" : "failed", why ?? msg, item.last_run_id ?? undefined)
+      }),
     )
     await setState({
       directory: target.directory,
@@ -686,7 +785,7 @@ export namespace AutofixQueue {
   export async function reset(target: ResolvedTarget, id: string) {
     const row = feedbackRow(id, target.project_id, target.directory)
     if (!row) throw new Error("Autofix feedback not found")
-    const why = note(row, target)
+    const why = await note(row, target)
     const runs = Database.use((db) =>
       db
         .select({ id: AutofixRunTable.id })
@@ -1026,5 +1125,23 @@ export namespace AutofixQueue {
       artifacts: await listArtifacts(run.id),
       events: await listEvents({ project_id: run.project_id, directory: run.directory, run_id: run.id }),
     } satisfies AutofixSchema.Detail
+  }
+
+  export async function attachmentData(feedback_id: string) {
+    return files(feedback_id)
+  }
+
+  export async function attachmentBlob(id: string) {
+    const row = Database.use((db) =>
+      db
+        .select({
+          file_blob: AutofixFeedbackAttachmentTable.file_blob,
+        })
+        .from(AutofixFeedbackAttachmentTable)
+        .where(eq(AutofixFeedbackAttachmentTable.id, id))
+        .get(),
+    )
+    if (!row?.file_blob) throw new Error("Autofix attachment not found")
+    return Buffer.isBuffer(row.file_blob) ? row.file_blob : Buffer.from(row.file_blob)
   }
 }

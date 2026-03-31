@@ -1,6 +1,14 @@
 [
   {
     "external_id": 10001,
-    "recognized_text": "设置页切换语言后，文案没有立即刷新。"
+    "recognized_text": "设置页切换语言后，文案没有立即刷新。",
+    "attachments": [
+      {
+        "display_order": 0,
+        "file_name": "case-1.png",
+        "mime_type": "image/png",
+        "file_blob_base64": "aW1n"
+      }
+    ]
   }
 ]

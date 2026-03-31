@@ -76,6 +76,7 @@ function item(id: number) {
     has_audio: false,
     recognized_text: "设置页切换语言后，文案没有立即刷新。",
     recognize_success: true,
+    attachments: [],
   } satisfies PulledFeedback
 }
 
@@ -119,7 +120,7 @@ describe("autofix.runner", () => {
     let seen: AutofixSchema.StartInput | undefined
 
     cfg = spyOn(AutofixConfig, "resolveForDirectory").mockResolvedValue(next)
-    analyze = spyOn(AutofixAnalyzer, "analyze").mockImplementation(async (_run, _audio, _extra, _prompt, input) => {
+    analyze = spyOn(AutofixAnalyzer, "analyze").mockImplementation(async (_run, _feedback, _audio, _extra, _prompt, input) => {
       seen = input
       return {
         summary: "需要人工处理",

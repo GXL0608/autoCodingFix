@@ -54,9 +54,27 @@ export type PulledFeedback = {
   recognize_error?: string
   recognize_response?: unknown
   meta?: unknown
+  attachments: PulledAttachment[]
+}
+
+export type PulledAttachment = {
+  external_id?: number
+  created_at: number
+  display_order: number
+  file_name?: string
+  mime_type: string
+  file_size_bytes?: number
+  file_blob: Buffer
 }
 
 export type TempAudio = {
+  path: string
+  filename: string
+  mime: string
+  size: number
+}
+
+export type TempAttachment = {
   path: string
   filename: string
   mime: string

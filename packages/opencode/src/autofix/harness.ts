@@ -4,8 +4,9 @@ import { SessionPrompt } from "@/session/prompt"
 import { MessageV2 } from "@/session/message-v2"
 import { pathToFileURL } from "url"
 import z from "zod"
+import { AutofixInput } from "./input"
 import { AutofixSchema } from "./schema"
-import type { ResolvedTarget, RunCtx } from "./types"
+import type { ResolvedTarget, RunCtx, TempAudio } from "./types"
 
 export namespace AutofixHarness {
   const survey_system = [
@@ -146,6 +147,8 @@ export namespace AutofixHarness {
     agent: "explore" | "plan"
     text: string
     system: string
+    feedback?: AutofixSchema.Feedback
+    audio?: TempAudio
     pick?: AutofixSchema.StartInput
     schema: z.ZodType<T>
     file?: string
@@ -155,6 +158,22 @@ export namespace AutofixHarness {
       parentID: SessionID.make(input.parentID),
       title: input.title,
     })
+    const built = await AutofixInput.build({
+      feedback: input.feedback,
+      text: input.text,
+      audio: input.audio,
+      extra: input.file
+        ? [
+            {
+              type: "file" as const,
+              url: pathToFileURL(input.file).href,
+              filename: input.file.split("/").pop() ?? "file.txt",
+              mime: "text/plain",
+            },
+          ]
+        : undefined,
+    })
+    try {
     const msg = await SessionPrompt.prompt({
       sessionID: ses.id,
       agent: input.agent,
@@ -166,22 +185,7 @@ export namespace AutofixHarness {
         schema: schema(input.schema),
         retryCount: 2,
       },
-      parts: [
-        {
-          type: "text",
-          text: input.text,
-        },
-        ...(input.file
-          ? [
-              {
-                type: "file" as const,
-                url: pathToFileURL(input.file).href,
-                filename: input.file.split("/").pop() ?? "file.txt",
-                mime: "text/plain",
-              },
-            ]
-          : []),
-      ],
+      parts: built.parts,
     })
     if (msg.info.role !== "assistant") throw new Error("Harness agent did not return an assistant message")
     const count = await audit(ses.id, input.cfg)
@@ -190,11 +194,16 @@ export namespace AutofixHarness {
       data: input.schema.parse(msg.info.structured),
       count,
     }
+    } finally {
+      await AutofixInput.cleanup(built.temp)
+    }
   }
 
   export async function survey(
     parentID: string,
     ctx: RunCtx,
+    feedback: AutofixSchema.Feedback,
+    audio: TempAudio | undefined,
     cfg: AutofixSchema.Harness,
     pick?: AutofixSchema.StartInput,
   ) {
@@ -203,6 +212,8 @@ export namespace AutofixHarness {
       title: `Harness survey #${ctx.external_id}`,
       agent: "explore",
       system: prompt(survey_system, cfg),
+      feedback,
+      audio,
       pick,
       schema: AutofixSchema.harness_survey,
       cfg,
@@ -220,6 +231,8 @@ export namespace AutofixHarness {
   export async function planReview(
     parentID: string,
     ctx: RunCtx,
+    feedback: AutofixSchema.Feedback,
+    audio: TempAudio | undefined,
     plan: AutofixSchema.Plan,
     sum: AutofixSchema.HarnessSurvey | undefined,
     cfg: AutofixSchema.Harness,
@@ -230,6 +243,8 @@ export namespace AutofixHarness {
       title: `Harness plan review #${ctx.external_id}`,
       agent: "plan",
       system: prompt(plan_system, cfg),
+      feedback,
+      audio,
       pick,
       schema: AutofixSchema.harness_decision,
       cfg,
@@ -252,6 +267,8 @@ export namespace AutofixHarness {
   export async function review(
     parentID: string,
     ctx: RunCtx,
+    feedback: AutofixSchema.Feedback,
+    audio: TempAudio | undefined,
     plan: AutofixSchema.Plan,
     no: number,
     files: string[],
@@ -264,6 +281,8 @@ export namespace AutofixHarness {
       title: `Harness review #${ctx.external_id} attempt ${no}`,
       agent: "plan",
       system: prompt(review_system, cfg),
+      feedback,
+      audio,
       pick,
       schema: AutofixSchema.harness_decision,
       cfg,
@@ -287,6 +306,8 @@ export namespace AutofixHarness {
   export async function gate(
     parentID: string,
     ctx: RunCtx,
+    feedback: AutofixSchema.Feedback,
+    audio: TempAudio | undefined,
     plan: AutofixSchema.Plan,
     no: number,
     files: string[],
@@ -301,6 +322,8 @@ export namespace AutofixHarness {
       title: `Harness gate #${ctx.external_id} attempt ${no}`,
       agent: "plan",
       system: prompt(gate_system, cfg),
+      feedback,
+      audio,
       pick,
       schema: AutofixSchema.harness_decision,
       cfg,

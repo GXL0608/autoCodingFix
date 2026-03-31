@@ -304,7 +304,8 @@ export namespace AutofixRunner {
       level: "info",
       message: opts?.plan ? `Continuing feedback #${feedback.external_id}` : `Analyzing feedback #${feedback.external_id}`,
     })
-    const plan = opts?.plan ?? (await AutofixAnalyzer.analyze(run, audio_file ?? undefined, opts?.extra, item, opts?.pick))
+    const plan =
+      opts?.plan ?? (await AutofixAnalyzer.analyze(run, feedback, audio_file ?? undefined, opts?.extra, item, opts?.pick))
     if (!plan.automatable) {
       await block(cfg, run.run_id, feedback.id, plan.blockers?.join("\n") || "Plan marked feedback as not automatable", plan)
       return
@@ -327,6 +328,7 @@ export namespace AutofixRunner {
       await AutofixQueue.setStatus(feedback.id, "implementing", undefined, run.run_id)
       const result = await AutofixExecutor.implement(
         run,
+        feedback,
         plan,
         no,
         audio_file ?? undefined,
@@ -496,7 +498,7 @@ export namespace AutofixRunner {
         level: "info",
         message: `Survey feedback #${feedback.external_id}`,
       })
-      const res = await AutofixHarness.survey(run.session_id, run, gov, opts?.pick)
+      const res = await AutofixHarness.survey(run.session_id, run, feedback, audio_file ?? undefined, gov, opts?.pick)
       sum = res.data
       await addMeta(run.run_id, "survey", res.session_id)
       await setMeta(run.run_id, {
@@ -508,6 +510,7 @@ export namespace AutofixRunner {
       opts?.plan ??
       (await AutofixAnalyzer.analyze(
         run,
+        feedback,
         audio_file ?? undefined,
         extra(opts?.extra, sum ? `survey 摘要：${sum.summary}\n重点文件：\n${sum.files.map((item) => `- ${item}`).join("\n")}` : undefined, gov.analysis),
         item,
@@ -528,7 +531,16 @@ export namespace AutofixRunner {
       await setMeta(run.run_id, {
         stage: "plan-review",
       })
-      const res = await AutofixHarness.planReview(run.session_id, run, plan, sum, gov, opts?.pick)
+      const res = await AutofixHarness.planReview(
+        run.session_id,
+        run,
+        feedback,
+        audio_file ?? undefined,
+        plan,
+        sum,
+        gov,
+        opts?.pick,
+      )
       await addMeta(run.run_id, "plan_review", res.session_id)
       await setMeta(run.run_id, {
         stage: "implementing",
@@ -583,6 +595,7 @@ export namespace AutofixRunner {
       await AutofixQueue.setStatus(feedback.id, "implementing", undefined, run.run_id)
       const result = await AutofixExecutor.implement(
         run,
+        feedback,
         plan,
         no,
         audio_file ?? undefined,
@@ -599,7 +612,18 @@ export namespace AutofixRunner {
         await setMeta(run.run_id, {
           stage: "review",
         })
-        const res = await AutofixHarness.review(run.session_id, run, plan, no, result.files, sum, gov, opts?.pick)
+        const res = await AutofixHarness.review(
+          run.session_id,
+          run,
+          feedback,
+          audio_file ?? undefined,
+          plan,
+          no,
+          result.files,
+          sum,
+          gov,
+          opts?.pick,
+        )
         await addMeta(run.run_id, "review", res.session_id)
         await AutofixQueue.updateAttempt(id, {
           review: res.data,
@@ -673,6 +697,8 @@ export namespace AutofixRunner {
         const res = await AutofixHarness.gate(
           run.session_id,
           run,
+          feedback,
+          audio_file ?? undefined,
           plan,
           no,
           result.files,
@@ -773,6 +799,7 @@ export namespace AutofixRunner {
       await fail(cfg, runID, feedback.id, err instanceof Error ? err.message : String(err), base_commit)
     } finally {
       if (sessionID) AutofixAuto.disable(sessionID)
+      if (audio_file?.path) await rm(audio_file.path, { force: true }).catch(() => undefined)
     }
   }
 

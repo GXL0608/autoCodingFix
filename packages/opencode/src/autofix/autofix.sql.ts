@@ -1,4 +1,4 @@
-import { integer, text, sqliteTable, index, real, primaryKey } from "drizzle-orm/sqlite-core"
+import { blob, integer, text, sqliteTable, index, real, primaryKey } from "drizzle-orm/sqlite-core"
 import { ProjectTable } from "../project/project.sql"
 import { Timestamps } from "../storage/schema.sql"
 import type { AutofixSchema } from "./schema"
@@ -73,6 +73,30 @@ export const AutofixFeedbackTable = sqliteTable(
   (table) => [
     index("autofix_feedback_project_external_idx").on(table.project_id, table.directory, table.external_id),
     index("autofix_feedback_project_status_created_idx").on(table.project_id, table.directory, table.status, table.created_at, table.id),
+  ],
+)
+
+export const AutofixFeedbackAttachmentTable = sqliteTable(
+  "autofix_feedback_attachment",
+  {
+    id: text().primaryKey(),
+    feedback_id: text()
+      .notNull()
+      .references(() => AutofixFeedbackTable.id, { onDelete: "cascade" }),
+    external_id: integer(),
+    created_at: integer().notNull(),
+    display_order: integer()
+      .notNull()
+      .$default(() => 0),
+    file_name: text(),
+    mime_type: text().notNull(),
+    file_size_bytes: integer(),
+    file_blob: blob({ mode: "buffer" }).notNull(),
+    ...Timestamps,
+  },
+  (table) => [
+    index("autofix_feedback_attachment_feedback_idx").on(table.feedback_id, table.display_order, table.created_at, table.id),
+    index("autofix_feedback_attachment_feedback_external_idx").on(table.feedback_id, table.external_id),
   ],
 )
 

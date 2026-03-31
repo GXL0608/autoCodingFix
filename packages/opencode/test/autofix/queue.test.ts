@@ -52,7 +52,14 @@ function cfg(project_id: string, directory: string) {
   } satisfies ResolvedTarget
 }
 
-function item(input: { id: number; at: number; text?: string; meta?: unknown; audio?: boolean }) {
+function item(input: {
+  id: number
+  at: number
+  text?: string
+  meta?: unknown
+  audio?: boolean
+  attachments?: PulledFeedback["attachments"]
+}) {
   return {
     external_id: input.id,
     created_at: input.at,
@@ -61,8 +68,9 @@ function item(input: { id: number; at: number; text?: string; meta?: unknown; au
     device_id: "local-import",
     has_audio: input.audio ?? false,
     recognized_text: input.text,
-    recognize_success: !!(input.text?.trim() || input.meta),
+    recognize_success: !!(input.text?.trim() || input.meta || input.attachments?.length),
     meta: input.meta,
+    attachments: input.attachments ?? [],
   } satisfies PulledFeedback
 }
 
@@ -152,6 +160,42 @@ describe("autofix.queue.importFeedback", () => {
     expect(state?.source_cursor_external_id).toBe(77)
     expect(state?.time_last_sync).toBe(555)
     expect(state?.active_run_id).toBe("run-7")
+  })
+
+  test("keeps image-only feedback queued and mirrors attachment metadata", async () => {
+    await using tmp = await tmpdir({ git: true })
+    const { project } = await Project.fromDirectory(tmp.path)
+    const target = cfg(project.id, tmp.path)
+
+    const result = await AutofixQueue.importFeedback(target, [
+      item({
+        id: 3,
+        at: 300,
+        attachments: [
+          {
+            created_at: 300,
+            display_order: 0,
+            file_name: "shot.png",
+            mime_type: "image/png",
+            file_size_bytes: 3,
+            file_blob: Buffer.from("img"),
+          },
+        ],
+      }),
+    ])
+
+    expect(result).toEqual({
+      imported: 1,
+      updated: 0,
+      blocked: 0,
+      cursor_created_at: 300,
+      cursor_external_id: 3,
+    })
+
+    const row = (await AutofixQueue.listFeedback(project.id, tmp.path))[0]
+    expect(row?.status).toBe("queued")
+    expect(row?.attachments).toHaveLength(1)
+    expect(row?.attachments[0]?.mime_type).toBe("image/png")
   })
 
   test("persists shared prompt across unrelated state updates", async () => {
