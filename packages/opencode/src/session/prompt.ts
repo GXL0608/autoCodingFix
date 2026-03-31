@@ -2,6 +2,8 @@ import path from "path"
 import os from "os"
 import fs from "fs/promises"
 import z from "zod"
+import { execFile } from "child_process"
+import { promisify } from "util"
 import { Filesystem } from "../util/filesystem"
 import { SessionID, MessageID, PartID } from "./schema"
 import { MessageV2 } from "./message-v2"
@@ -1122,12 +1124,39 @@ export namespace SessionPrompt {
                   },
                 ]
               }
+              // Handle animated GIF: extract frames using ffmpeg
+              if (part.mime === "image/gif") {
+                try {
+                  const frames = await extractGifFramesFromDataUrl(part.url)
+                  if (frames && frames.length > 1) {
+                    const result = frames.map((frame, index) => ({
+                      type: "file" as const,
+                      messageID: info.id,
+                      sessionID: input.sessionID,
+                      mime: "image/png",
+                      filename: `${part.filename || "animation"}_frame_${index + 1}_of_${frames.length}.png`,
+                      url: `data:image/png;base64,${frame}`,
+                    }))
+                    return result
+                  }
+                } catch {
+                  // Fall through to send GIF as-is
+                }
+              }
               break
             case "file:":
-              log.info("file", { mime: part.mime })
               // have to normalize, symbol search returns absolute paths
               // Decode the pathname since URL constructor doesn't automatically decode it
               const filepath = fileURLToPath(part.url)
+
+              // Auto-detect actual MIME type from file extension
+              // The frontend may send "text/plain" for all file references
+              const detectedMime = Filesystem.mimeType(filepath)
+              if (detectedMime && detectedMime !== "application/octet-stream") {
+                part.mime = detectedMime
+              }
+
+              log.info("file", { mime: part.mime })
               const s = Filesystem.stat(filepath)
 
               if (s?.isDirectory()) {
@@ -1278,6 +1307,38 @@ export namespace SessionPrompt {
               }
 
               await FileTime.read(input.sessionID, filepath)
+
+              // Handle animated GIF files: extract frames using ffmpeg
+              if (part.mime === "image/gif") {
+                try {
+                  const gifFrames = await extractGifFramesFromFile(filepath)
+                  if (gifFrames && gifFrames.length > 1) {
+                    const pieces: Draft<MessageV2.Part>[] = [
+                      {
+                        messageID: info.id,
+                        sessionID: input.sessionID,
+                        type: "text",
+                        text: `Called the Read tool with the following input: {"filePath":"${filepath}"}\nAnimated GIF detected - extracted ${gifFrames.length} key frames for analysis.`,
+                        synthetic: true,
+                      },
+                      ...gifFrames.map((frame, index) => ({
+                        id: part.id,
+                        messageID: info.id,
+                        sessionID: input.sessionID,
+                        type: "file" as const,
+                        url: `data:image/png;base64,${frame}`,
+                        mime: "image/png",
+                        filename: `${part.filename || "animation"}_frame_${index + 1}_of_${gifFrames.length}.png`,
+                        source: part.source,
+                      })),
+                    ]
+                    return pieces
+                  }
+                } catch {
+                  // Fall through to send GIF as-is
+                }
+              }
+
               return [
                 {
                   messageID: info.id,
@@ -2045,5 +2106,172 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         throw err
       })
     }
+  }
+}
+
+const execFileAsync = promisify(execFile)
+const MAX_GIF_FRAMES = 15
+
+/**
+ * Extract key frames from an animated GIF provided as a data URL.
+ * Decodes the base64 data to a temp file, uses ffmpeg to extract frames,
+ * and returns an array of base64-encoded PNG frame data.
+ */
+async function extractGifFramesFromDataUrl(dataUrl: string): Promise<string[] | null> {
+  // Check if ffmpeg is available
+  try {
+    await execFileAsync("which", ["ffmpeg"])
+  } catch {
+    return null
+  }
+
+  // Decode base64 from data URL
+  const match = dataUrl.match(/^data:image\/gif;base64,(.+)$/)
+  if (!match || !match[1]) return null
+
+  const gifBuffer = Buffer.from(match[1], "base64")
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-gif-"))
+  const tmpGif = path.join(tmpDir, "input.gif")
+
+  try {
+    // Write GIF to temp file
+    await fs.writeFile(tmpGif, gifBuffer)
+
+    // Get total frame count
+    let totalFrames: number
+    try {
+      const { stdout } = await execFileAsync("ffprobe", [
+        "-v", "error",
+        "-count_frames",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=nb_read_frames",
+        "-of", "csv=p=0",
+        tmpGif,
+      ])
+      totalFrames = parseInt(stdout.trim(), 10)
+      if (isNaN(totalFrames) || totalFrames <= 1) {
+        return null // Static GIF
+      }
+    } catch {
+      return null
+    }
+
+    // Extract all frames
+    await execFileAsync("ffmpeg", [
+      "-y",
+      "-i", tmpGif,
+      "-vsync", "vfr",
+      `${tmpDir}/frame_%04d.png`,
+    ])
+
+    // Read extracted frames
+    const frameFiles = (await fs.readdir(tmpDir))
+      .filter((f) => f.startsWith("frame_") && f.endsWith(".png"))
+      .sort()
+
+    if (frameFiles.length <= 1) return null
+
+    // Uniform sampling if too many frames
+    let selectedFiles: string[]
+    if (frameFiles.length > MAX_GIF_FRAMES) {
+      selectedFiles = []
+      const step = frameFiles.length / MAX_GIF_FRAMES
+      for (let i = 0; i < MAX_GIF_FRAMES; i++) {
+        const idx = Math.min(Math.floor(i * step), frameFiles.length - 1)
+        selectedFiles.push(frameFiles[idx])
+      }
+    } else {
+      selectedFiles = frameFiles
+    }
+
+    // Read frames as base64
+    const frames: string[] = []
+    for (const file of selectedFiles) {
+      const buffer = await fs.readFile(path.join(tmpDir, file))
+      frames.push(buffer.toString("base64"))
+    }
+
+    return frames
+  } catch {
+    return null
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+/**
+ * Extract key frames from an animated GIF file on disk.
+ * Uses ffmpeg to extract frames and returns an array of base64-encoded PNG frame data.
+ */
+async function extractGifFramesFromFile(filepath: string): Promise<string[] | null> {
+  // Check if ffmpeg is available
+  try {
+    await execFileAsync("which", ["ffmpeg"])
+  } catch {
+    return null
+  }
+
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "opencode-gif-"))
+
+  try {
+    // Get total frame count
+    let totalFrames: number
+    try {
+      const { stdout } = await execFileAsync("ffprobe", [
+        "-v", "error",
+        "-count_frames",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=nb_read_frames",
+        "-of", "csv=p=0",
+        filepath,
+      ])
+      totalFrames = parseInt(stdout.trim(), 10)
+      if (isNaN(totalFrames) || totalFrames <= 1) {
+        return null // Static GIF
+      }
+    } catch {
+      return null
+    }
+
+    // Extract all frames
+    await execFileAsync("ffmpeg", [
+      "-y",
+      "-i", filepath,
+      "-vsync", "vfr",
+      `${tmpDir}/frame_%04d.png`,
+    ])
+
+    // Read extracted frames
+    const frameFiles = (await fs.readdir(tmpDir))
+      .filter((f) => f.startsWith("frame_") && f.endsWith(".png"))
+      .sort()
+
+    if (frameFiles.length <= 1) return null
+
+    // Uniform sampling if too many frames
+    let selectedFiles: string[]
+    if (frameFiles.length > MAX_GIF_FRAMES) {
+      selectedFiles = []
+      const step = frameFiles.length / MAX_GIF_FRAMES
+      for (let i = 0; i < MAX_GIF_FRAMES; i++) {
+        const idx = Math.min(Math.floor(i * step), frameFiles.length - 1)
+        selectedFiles.push(frameFiles[idx])
+      }
+    } else {
+      selectedFiles = frameFiles
+    }
+
+    // Read frames as base64
+    const frames: string[] = []
+    for (const file of selectedFiles) {
+      const buffer = await fs.readFile(path.join(tmpDir, file))
+      frames.push(buffer.toString("base64"))
+    }
+
+    return frames
+  } catch {
+    return null
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
   }
 }
